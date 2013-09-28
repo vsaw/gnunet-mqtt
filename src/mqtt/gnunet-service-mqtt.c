@@ -153,7 +153,7 @@ struct RemoteSubscriberInfo
   /**
    * The subscriber's identity.
    */
-  const struct GNUNET_PeerIdentity *id;
+  struct GNUNET_PeerIdentity id;
 
   /**
    * Tunnel connecting us to the subscriber.
@@ -188,21 +188,29 @@ struct RemoteSubscriberInfo
 };
 
 
-/*
+/**
  * Struct representing one active subscription in our service.
  */
 struct Subscription
 {
-  /* Handle used to cancel the annnouncement */
+  /**
+   * Handle used to cancel the annnouncement
+   */
   struct GNUNET_REGEX_announce_handle *regex_announce_handle;
 
-  /* The subscribed client */
+  /**
+   * The subscribed client 
+   */
   struct ClientInfo *client;
 
-  /* Unique ID for this subscription */
+  /**
+   * Unique ID for this subscription 
+   */
   uint64_t request_id;
 
-  /* The automaton built using the subcription provided by the user */
+  /**
+   * The automaton built using the subcription provided by the user 
+   */
   regex_t automaton;
 };
 
@@ -293,7 +301,7 @@ static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|
  * @param regex_topic client identification of the client
  * 
  */
-void
+static void
 add_prefix (const char *topic, char **prefixed_topic)
 {
 	int n, i;
@@ -323,7 +331,7 @@ add_prefix (const char *topic, char **prefixed_topic)
  * @param regex_topic client identification of the client
  * 
  */
-void
+static void
 get_regex (char *topic, char **regex_topic)
 {
   char *plus;
@@ -433,7 +441,7 @@ find_active_client (struct GNUNET_SERVER_Client *client)
     pos = pos->next;
   }
 
-  ret = GNUNET_malloc (sizeof (struct ClientInfo));
+  ret = GNUNET_new (struct ClientInfo);
   ret->client_handle = client;
   ret->transmit_handle = NULL;
   GNUNET_CONTAINER_DLL_insert (client_head, client_tail, ret);
@@ -490,7 +498,6 @@ remote_subscriber_info_free (struct RemoteSubscriberInfo *subscriber)
   }
 
   GNUNET_MESH_tunnel_destroy (subscriber->tunnel);
-  GNUNET_free ((void *) subscriber->id);
   GNUNET_free (subscriber);
 }
 
@@ -535,113 +542,6 @@ regex_search_context_free (struct RegexSearchContext *context)
 }
 
 
-static void
-process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber);
-
-static void
-delete_delivered_message (void *cls,
-                          const struct GNUNET_SCHEDULER_TaskContext *tc);
-
-static void 
-set_timer_for_deleting_message (struct PendingMessage *pm);
-
-
-/**
- * Callback called as a result of issuing
- * a GNUNET_MESH_notify_transmit_ready request. A RemoteSubscriberInfo
- * is passed as closure, take the head of the list and copy it into buf,
- * which has the result of sending the message to the subscriber.
- *
- * @param cls closure to this call
- * @param size maximum number of bytes available to send
- * @param buf where to copy the actual message to
- *
- * @return the number of bytes actually copied, 0 indicates failure
- */
-static size_t
-send_msg_to_subscriber (void *cls, size_t size, void *buf)
-{
-  struct RemoteSubscriberInfo *subscriber = cls;
-  char *cbuf = buf;
-  struct PendingMessage *pm;
-  size_t off;
-  size_t msize;
-  
-  subscriber->transmit_handle = NULL;
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-			"Send message to subscriber.\n");
-
-  if (buf == NULL)
-  {
-    /* subscriber disconnected */
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "Subscriber %s disconnected, %s",
-                GNUNET_i2s (subscriber->id),
-                "pending messages will be discarded\n");
-    return 0;
-  }
-
-  off = 0;
-
-  while ((NULL != (pm = subscriber->pending_head)) &&
-         (size >= off + (msize = ntohs (pm->msg->size))))
-  {
-    GNUNET_CONTAINER_DLL_remove (subscriber->pending_head,
-                                 subscriber->pending_tail, pm);
-    memcpy (&cbuf[off], pm->msg, msize);
-    
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-                "Transmitting %u bytes to subscriber %s\n", msize,
-                GNUNET_i2s (subscriber->id));
-    off += msize;
-	set_timer_for_deleting_message(pm);	
-
-	GNUNET_free (pm->msg);
-	GNUNET_free (pm);
-  }
-
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "Transmitted %zu/%zu bytes to subscriber %s\n",
-              off, size, GNUNET_i2s (subscriber->id));
-  process_pending_subscriber_messages (subscriber);
-  
-  return off;
-}
-
-
-/**
- * Task run to check for messages that need to be sent to a subscriber.
- *
- * @param client a RemoteSubscriberInfo struct, containing the tunnel
- *               handle and any messages to be sent to it
- */
-static void
-process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber)
-{
-  struct GNUNET_MessageHeader *msg;
-
-  if ((subscriber->pending_head == NULL) ||
-      (subscriber->transmit_handle != NULL))
-  {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-                "Not asking for transmission to %s now: %s\n",
-                GNUNET_i2s (subscriber->id),
-                subscriber->pending_head ==
-                NULL ? "no more messages" : "request already pending");
-    return;
-  }
-
-  msg = subscriber->pending_head->msg;
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "asking for transmission of %u bytes to client %s\n",
-              ntohs (msg->size), GNUNET_i2s (subscriber->id));
-
-  subscriber->transmit_handle =
-    GNUNET_MESH_notify_transmit_ready (subscriber->tunnel, 
-				       GNUNET_NO,
-                                       GNUNET_TIME_UNIT_FOREVER_REL,
-                                       ntohs (msg->size),
-                                       send_msg_to_subscriber, subscriber);
-}
 
 
 /**
@@ -693,6 +593,109 @@ set_timer_for_deleting_message (struct PendingMessage *pm)
       message_delete_time,
       delete_delivered_message, pm->context);
   }
+}
+
+
+static void
+process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber);
+
+
+/**
+ * Callback called as a result of issuing
+ * a GNUNET_MESH_notify_transmit_ready request. A RemoteSubscriberInfo
+ * is passed as closure, take the head of the list and copy it into buf,
+ * which has the result of sending the message to the subscriber.
+ *
+ * @param cls closure to this call
+ * @param size maximum number of bytes available to send
+ * @param buf where to copy the actual message to
+ *
+ * @return the number of bytes actually copied, 0 indicates failure
+ */
+static size_t
+send_msg_to_subscriber (void *cls, size_t size, void *buf)
+{
+  struct RemoteSubscriberInfo *subscriber = cls;
+  char *cbuf = buf;
+  struct PendingMessage *pm;
+  size_t off;
+  size_t msize;
+  
+  subscriber->transmit_handle = NULL;
+  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+			"Send message to subscriber.\n");
+
+  if (buf == NULL)
+  {
+    /* subscriber disconnected */
+    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+		"Subscriber %s disconnected, pending messages will be discarded\n",
+                GNUNET_i2s (&subscriber->id));
+                
+    return 0;
+  }
+
+  off = 0;
+
+  while ((NULL != (pm = subscriber->pending_head)) &&
+         (size >= off + (msize = ntohs (pm->msg->size))))
+  {
+    GNUNET_CONTAINER_DLL_remove (subscriber->pending_head,
+                                 subscriber->pending_tail, pm);
+    memcpy (&cbuf[off], pm->msg, msize);
+    
+    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+                "Transmitting %u bytes to subscriber %s\n", msize,
+                GNUNET_i2s (&subscriber->id));
+    off += msize;
+	set_timer_for_deleting_message(pm);	
+
+	GNUNET_free (pm->msg);
+	GNUNET_free (pm);
+  }
+
+  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+              "Transmitted %zu/%zu bytes to subscriber %s\n",
+              off, size, GNUNET_i2s (&subscriber->id));
+  process_pending_subscriber_messages (subscriber);
+  
+  return off;
+}
+
+
+/**
+ * Task run to check for messages that need to be sent to a subscriber.
+ *
+ * @param client a RemoteSubscriberInfo struct, containing the tunnel
+ *               handle and any messages to be sent to it
+ */
+static void
+process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber)
+{
+  struct GNUNET_MessageHeader *msg;
+
+  if ((subscriber->pending_head == NULL) ||
+      (subscriber->transmit_handle != NULL))
+  {
+    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+                "Not asking for transmission to %s now: %s\n",
+                GNUNET_i2s (&subscriber->id),
+                subscriber->pending_head ==
+                NULL ? "no more messages" : "request already pending");
+    return;
+  }
+
+  msg = subscriber->pending_head->msg;
+  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+              "asking for transmission of %u bytes to client %s\n",
+              ntohs (msg->size), GNUNET_i2s (&subscriber->id));
+
+  subscriber->transmit_handle =
+    GNUNET_MESH_notify_transmit_ready (subscriber->tunnel, 
+				       GNUNET_NO,
+                                       GNUNET_TIME_UNIT_FOREVER_REL,
+                                       ntohs (msg->size),
+                                       send_msg_to_subscriber, subscriber);
 }
 
 
@@ -767,7 +770,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
   msg = GNUNET_malloc (msg_len);
   memcpy (msg, context->publish_msg, msg_len);
 
-  pm = GNUNET_malloc (sizeof (struct PendingMessage));
+  pm = GNUNET_new (struct PendingMessage);
   pm->msg = msg;
   pm->context = context;
 
@@ -776,7 +779,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
                 "creating a new tunnel to %s\n", GNUNET_i2s(id));
 
-    subscriber = GNUNET_malloc (sizeof (struct RemoteSubscriberInfo));
+    subscriber = GNUNET_new (struct RemoteSubscriberInfo);
 
     subscriber->tunnel = GNUNET_MESH_tunnel_create (mesh_handle, 
 						    NULL,
@@ -786,9 +789,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
     subscriber->peer_added = GNUNET_NO;
     subscriber->peer_connecting = GNUNET_NO;
 
-    subscriber->id = GNUNET_malloc (sizeof (struct GNUNET_PeerIdentity));
-    memcpy ((struct GNUNET_PeerIdentity*) subscriber->id, id,
-            sizeof (struct GNUNET_PeerIdentity));
+    subscriber->id = *id;
 
     GNUNET_CONTAINER_multihashmap_put (remote_subscribers, &id->hashPubKey,
       subscriber, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
@@ -815,7 +816,7 @@ search_for_subscribers (const char *topic,
 {
   struct RegexSearchContext *context;
 
-  context = GNUNET_malloc (sizeof (struct RegexSearchContext));
+  context = GNUNET_new (struct RegexSearchContext);
   context->publish_msg = publish_msg;
   context->file_path = file_path;
   context->message_delivered = GNUNET_NO;
@@ -829,6 +830,7 @@ search_for_subscribers (const char *topic,
                               GNUNET_CONTAINER_SLIST_DISPOSITION_STATIC,
                               context, sizeof (struct RegexSearchContext));
 }
+
 
 /**
  * Handle MQTT-PUBLISH-message.
@@ -875,11 +877,7 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 	 GNUNET_CRYPTO_hash_create_random(GNUNET_CRYPTO_QUALITY_WEAK, &file_name_hash);
 	 file_name = GNUNET_h2s_full(&file_name_hash);
 	 
-	 GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, file_name );			
-	 //file_path = GNUNET_malloc (strlen(current_dir_name)+ strlen(file_name) + 2);
-	 //strcpy(file_path, current_dir_name);
-	 //strcat(file_path, DIR_SEPARATOR_STR);
-	 //strcat(file_path, file_name);	 
+	 GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, file_name );
 	 	 
 	 if (NULL != (persistence_file = fopen(file_path, "w+")))
 	 {
@@ -935,7 +933,7 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
           subscribe_msg->topic_len);
   topic[subscribe_msg->topic_len - 1] = '\0';
 
-  subscription = GNUNET_malloc (sizeof (struct Subscription));
+  subscription = GNUNET_new (struct Subscription);
 
   get_regex (topic, &regex_topic);
  
@@ -1126,7 +1124,7 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
 
   client_info = find_active_client (client);
   unsub_ack_msg =
-    GNUNET_malloc (sizeof (struct GNUNET_MQTT_ClientUnsubscribeAckMessage));
+    GNUNET_new (struct GNUNET_MQTT_ClientUnsubscribeAckMessage);
 
   unsub_ack_msg->header.size =
     sizeof (struct GNUNET_MQTT_ClientUnsubscribeAckMessage);
@@ -1134,7 +1132,7 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
     htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_UNSUBSCRIBE_ACK);
   unsub_ack_msg->request_id = subscription->request_id;
 
-  pm = GNUNET_malloc (sizeof (struct PendingMessage));
+  pm = GNUNET_new (struct PendingMessage);
   pm->msg = (struct GNUNET_MessageHeader*) unsub_ack_msg;
 
   add_pending_client_message (client_info, pm);
@@ -1193,7 +1191,7 @@ deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg,
 
       return_msg->request_id = subscription->request_id;
 
-      pm = GNUNET_malloc (sizeof (struct PendingMessage));
+      pm = GNUNET_new (struct PendingMessage);
       pm->msg = (struct GNUNET_MessageHeader*) return_msg;
 	  pm->context = context;
 
@@ -1237,7 +1235,6 @@ handle_tunnel_message (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
 {
   return GNUNET_OK;
 }
-
 
 
 static int
@@ -1345,7 +1342,7 @@ shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
 }
 
 
-static void*
+static void *
 new_incoming_tunnel_callback (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
                               const struct GNUNET_PeerIdentity *initiator,
 			      uint32_t port)
@@ -1361,10 +1358,11 @@ incoming_tunnel_destroyed_callback (void *cls,
 {
 }
 
+
 /**
  * Look for old messages and call try to deliver them again by calling regex search
  *
-  */
+ */
 static void
 look_for_old_messages ()
 {
@@ -1386,11 +1384,6 @@ look_for_old_messages ()
 	if (GNUNET_OK == GNUNET_CONFIGURATION_get_value_filename(cfg, "PATHS", "SERVICEHOME", &current_dir))
   {
    GNUNET_asprintf (&current_dir_name, "%s%s", current_dir, folder_name);
-	 //current_dir_name = GNUNET_malloc (strlen(current_dir)+ strlen(folder_name)+1);
-	 //strcpy(current_dir_name, current_dir);
-	 //strcat(current_dir_name, folder_name);
-	
-	
 	
 	if ((dir = opendir (current_dir_name)) != NULL) 
 	{
@@ -1399,11 +1392,7 @@ look_for_old_messages ()
 			 if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
 				continue;
 			
-			GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, ent->d_name );			
-			//file_path = GNUNET_malloc (strlen(current_dir_name)+ strlen(ent->d_name) + 1);
-			//strcpy(file_path, current_dir_name);
-			//strcat(file_path, DIR_SEPARATOR_STR);
-			//strcat(file_path, ent->d_name);
+			GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, ent->d_name);
 			file = fopen(file_path, "r");
             if (file != NULL)
 			{
@@ -1461,6 +1450,7 @@ look_for_old_messages ()
               "Not able to get current directory!");
 	}
 }
+
 
 /**
  * Process statistics requests.

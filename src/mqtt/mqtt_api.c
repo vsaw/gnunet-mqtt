@@ -29,7 +29,6 @@
 #include "gnunet_mqtt_service.h"
 #include "gnunet_protocols_mqtt.h"
 #include "mqtt.h"
-#include "regex_utils.h"
 
 
 #define LOG(kind,...) GNUNET_log_from (kind, "mqtt-api",__VA_ARGS__)
@@ -270,7 +269,6 @@ try_connect (struct GNUNET_MQTT_Handle *handle)
          _("Failed to connect to the MQTT service!\n"));
     return GNUNET_NO;
   }
-
   return GNUNET_YES;
 }
 
@@ -341,7 +339,7 @@ GNUNET_MQTT_connect (const struct GNUNET_CONFIGURATION_Handle *cfg)
 {
   struct GNUNET_MQTT_Handle *handle;
 
-  handle = GNUNET_malloc (sizeof (struct GNUNET_MQTT_Handle));
+  handle = GNUNET_new (struct GNUNET_MQTT_Handle);
   handle->cfg = cfg;
   handle->uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
                                               UINT64_MAX);
@@ -795,7 +793,7 @@ GNUNET_MQTT_publish (struct GNUNET_MQTT_Handle *handle, uint8_t topic_len,
     GNUNET_break (0);
     return NULL;
   }
-  ph = GNUNET_malloc (sizeof (struct GNUNET_MQTT_PublishHandle));
+  ph = GNUNET_new (struct GNUNET_MQTT_PublishHandle);
   ph->mqtt_handle = handle;
   ph->cont = cont;
   ph->cont_cls = cont_cls;
@@ -891,7 +889,7 @@ GNUNET_MQTT_subscribe (struct GNUNET_MQTT_Handle *handle, uint8_t topic_len,
 
   GNUNET_assert (NULL != cb);
   tsize = sizeof (struct GNUNET_MQTT_ClientSubscribeMessage) + topic_len;
-  sh = GNUNET_malloc (sizeof (struct GNUNET_MQTT_SubscribeHandle));
+  sh = GNUNET_new (struct GNUNET_MQTT_SubscribeHandle);
   sh->mqtt_handle = handle;
   sh->cont = cont;
   sh->cont_cls = cont_cls;
