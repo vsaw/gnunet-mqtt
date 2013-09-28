@@ -1,0 +1,8 @@
+[mqtt]
+BINARY = gnunet-service-mqtt
+UNIXPATH = /tmp/gnunet-service-mqtt.sock
+HOME = $SERVICEHOME
+# PORT = 2106
+@UNIXONLY@ PORT = 35345
+SUBSCRIPTION_REANNOUNCE_TIME = 5 m
+MESSAGE_DELETE_TIME = 5 s
