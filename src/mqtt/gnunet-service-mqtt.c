@@ -27,15 +27,15 @@
 #include <gnunet/platform.h>
 #include <gnunet/gnunet_util_lib.h>
 #include <gnunet/gnunet_regex_lib.h>
-#include <gnunet/gnunet_core_service.h>
 #include <gnunet/gnunet_dht_service.h>
 #include <gnunet/gnunet_mesh_service.h>
 #include <gnunet/gnunet_applications.h>
 #include <gnunet/gnunet_configuration_lib.h>
 #include "gnunet_protocols_mqtt.h"
 #include "mqtt.h"
-#include "regex_utils.h"
+#include <regex.h>
 
+#define FIXME_PORT 424
 
 /**
  * Struct representing the context for the regex search
@@ -193,7 +193,7 @@ struct RemoteSubscriberInfo
  */
 struct Subscription
 {
-  /* Handle used to reannounce the subscription */
+  /* Handle used to cancel the annnouncement */
   struct GNUNET_REGEX_announce_handle *regex_announce_handle;
 
   /* The subscribed client */
@@ -203,7 +203,7 @@ struct Subscription
   uint64_t request_id;
 
   /* The automaton built using the subcription provided by the user */
-  struct GNUNET_REGEX_Automaton *automaton;
+  regex_t automaton;
 };
 
 /**
@@ -215,11 +215,6 @@ static const struct GNUNET_CONFIGURATION_Handle *cfg;
  * Handle to the DHT.
  */
 static struct GNUNET_DHT_Handle *dht_handle;
-
-/**
- * Handle to the core service.
- */
-static struct GNUNET_CORE_Handle *core_handle;
 
 /**
  * Handle to the server.
@@ -234,7 +229,7 @@ static struct GNUNET_MESH_Handle *mesh_handle;
 /**
  * The identity of the local peer.
  */
-static const struct GNUNET_PeerIdentity *my_id;
+static struct GNUNET_PeerIdentity my_id;
 
 /**
  * Singly linked list storing active subscriptions.
@@ -272,19 +267,115 @@ static char *current_dir_name;
 static struct GNUNET_CONTAINER_SList *search_contexts;
 
 /**
- * How often to reannounce active subscriptions.
- */
-static struct GNUNET_TIME_Relative subscription_reannounce_time;
-
-/**
  * The time the peer that received a publish message waits before it deletes it after it was sent to a subscrier
  */
 static struct GNUNET_TIME_Relative message_delete_time;
 
 /**
- * Task responsible for reannouncing active subscriptions.
+ * String constant for prefixing the topic
+ */ 
+static const char *prefix = "GNUNET-MQTT 0001 00000"; 
+
+/**
+ * String constant for replacing '+' wildcard in the subscribed topics.
  */
-static GNUNET_SCHEDULER_TaskIdentifier reannounce_task;
+static const char *plus_regex = "(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+";
+
+/**
+ * String constant for replacing '#' wildcard in the subscribed topics.
+ */
+static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+)*";
+
+/**
+ * Adds the prefix to the toopic (App ID + Version + Padding)
+ *
+ * @param topic topic of subscription as provided by the subscriber
+ * @param regex_topic client identification of the client
+ * 
+ */
+void
+add_prefix (const char *topic, char **prefixed_topic)
+{
+	int n, i;
+	*prefixed_topic = GNUNET_malloc(strlen(prefix) + strlen(topic)+1);
+	n = 0;
+	 
+	for (i = 0; prefix[i] != '\0'; i++) 
+  {
+    (*prefixed_topic)[i] = prefix[i];
+	}
+	n = i;
+	
+	for (i = 0; topic[i] != '\0'; i++) 
+  {
+    (*prefixed_topic)[n] = topic[i];
+	n++;
+	}
+	
+	 (*prefixed_topic)[n] = '\0';
+}
+	
+
+/**
+ * Transform topics to regex expression.
+ *
+ * @param topic topic of subscription as provided by the subscriber
+ * @param regex_topic client identification of the client
+ * 
+ */
+void
+get_regex (char *topic, char **regex_topic)
+{
+  char *plus;
+  char *hash;
+  char *prefixed_topic;
+  int i, j, k; 
+  int plus_counter = 0;
+  int hash_exists = 0;
+  
+  plus = strchr(topic,'+');
+   while (plus != NULL)
+  {
+	plus_counter +=1;
+	plus=strchr(plus+1,'+');
+	} 		
+  hash = strchr(topic,'#');
+  if (hash != NULL)
+  {
+	hash_exists = 1;
+  }
+  
+  add_prefix(topic, &prefixed_topic); 
+  
+  *regex_topic = GNUNET_malloc(strlen(prefixed_topic) - plus_counter - hash_exists + plus_counter*strlen(plus_regex) + hash_exists*strlen(hash_regex)+1);
+  j = 0;
+  for (i = 0; prefixed_topic[i] != '\0'; i++) 
+  {
+    if (prefixed_topic[i] == '+') 
+    {
+      for (k = 0; k<strlen(plus_regex); k++)
+      {
+	(*regex_topic)[j] = plus_regex[k];
+	j++;
+      }
+    }
+    else if (prefixed_topic[i] == '#') 
+    {
+      j--;
+      for (k = 0; k<strlen(hash_regex); k++)
+      {
+	(*regex_topic)[j] = hash_regex[k];
+	j++;
+      }
+     }else
+     {
+      (*regex_topic)[j] = prefixed_topic[i];
+      j++;
+      }
+    }
+    (*regex_topic)[j] = '\0';
+  }
+  
 
 
 /**
@@ -363,7 +454,7 @@ find_active_client (struct GNUNET_SERVER_Client *client)
 static void
 subscription_free (struct Subscription *subscription)
 {
-  GNUNET_REGEX_automaton_destroy (subscription->automaton);
+  regfree (&subscription->automaton);
   GNUNET_REGEX_announce_cancel (subscription->regex_announce_handle);
   GNUNET_free (subscription);
 }
@@ -545,9 +636,10 @@ process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber)
               ntohs (msg->size), GNUNET_i2s (subscriber->id));
 
   subscriber->transmit_handle =
-    GNUNET_MESH_notify_transmit_ready (subscriber->tunnel, GNUNET_NO,
+    GNUNET_MESH_notify_transmit_ready (subscriber->tunnel, 
+				       GNUNET_NO,
                                        GNUNET_TIME_UNIT_FOREVER_REL,
-                                       subscriber->id, ntohs (msg->size),
+                                       ntohs (msg->size),
                                        send_msg_to_subscriber, subscriber);
 }
 
@@ -619,56 +711,6 @@ add_pending_subscriber_message (struct RemoteSubscriberInfo *subscriber,
 }
 
 
-/**
- * Method called whenever a subscriber has disconnected from the tunnel.
- *
- * @param cls closure
- * @param peer peer identity the tunnel stopped working with
- */
-static void
-subscribed_peer_disconnected (void *cls,
-                              const struct GNUNET_PeerIdentity *peer)
-{
-  struct RemoteSubscriberInfo *subscriber = cls;
-
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "subscribed peer %s disconnected\n",
-              GNUNET_i2s (peer));
-
-  subscriber->peer_added = GNUNET_NO;
-  subscriber->peer_connecting = GNUNET_NO;
-}
-
-
-/**
- * Method called whenever a subscriber has connected to the tunnel.
- *
- * @param cls closure
- * @param peer peer identity the tunnel was created to, NULL on timeout
- * @param atsi performance data for the connection
- */
-static void
-subscribed_peer_connected (void *cls, const struct GNUNET_PeerIdentity *peer,
-                           const struct GNUNET_ATS_Information *atsi)
-{
-  struct RemoteSubscriberInfo *subscriber = cls;
-
-  if (NULL == peer) {
-    GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-                "Connecting to subscribed peer %s timed out.\n",GNUNET_i2s (peer));
-    /* TODO: destroy the tunnel */
-    subscriber->peer_connecting = GNUNET_NO;
-    return;
-  }
-
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "subscribed peer %s connected\n",
-              GNUNET_i2s (peer));
-
-  subscriber->peer_added = GNUNET_YES;
-  subscriber->peer_connecting = GNUNET_NO;
-  process_pending_subscriber_messages (subscriber);
-}
-
-
 static void
 deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, struct RegexSearchContext *context);
 
@@ -713,7 +755,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
   subscriber = GNUNET_CONTAINER_multihashmap_get (remote_subscribers,
                                                   &id->hashPubKey);
 
-  if (0 == GNUNET_CRYPTO_hash_cmp (&id->hashPubKey, &my_id->hashPubKey))
+  if (0 == GNUNET_CRYPTO_hash_cmp (&id->hashPubKey, &my_id.hashPubKey))
   {
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
                 "fast tracking PUBLISH message to local subscribers\n");
@@ -736,8 +778,11 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
 
     subscriber = GNUNET_malloc (sizeof (struct RemoteSubscriberInfo));
 
-    subscriber->tunnel = GNUNET_MESH_tunnel_create (mesh_handle, NULL,
-      subscribed_peer_connected, subscribed_peer_disconnected, subscriber);
+    subscriber->tunnel = GNUNET_MESH_tunnel_create (mesh_handle, 
+						    NULL,
+						    id,
+						    FIXME_PORT,
+						    GNUNET_NO, GNUNET_YES);
     subscriber->peer_added = GNUNET_NO;
     subscriber->peer_connecting = GNUNET_NO;
 
@@ -750,16 +795,9 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
   }
 
   add_pending_subscriber_message (subscriber, pm);
-
-  if (GNUNET_YES == subscriber->peer_added)
-  {
-    process_pending_subscriber_messages (subscriber);
-  }
-  else if (GNUNET_NO == subscriber->peer_connecting)
-  {
-    GNUNET_MESH_peer_request_connect_add (subscriber->tunnel, id);
-    subscriber->peer_connecting = GNUNET_YES;
-  }
+  subscriber->peer_added = GNUNET_YES;
+  subscriber->peer_connecting = GNUNET_NO;
+  process_pending_subscriber_messages (subscriber);
 }
 
 
@@ -898,18 +936,26 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   topic[subscribe_msg->topic_len - 1] = '\0';
 
   subscription = GNUNET_malloc (sizeof (struct Subscription));
+
+  get_regex (topic, &regex_topic);
+ 
+  if (0 != regcomp (&subscription->automaton,
+		    regex_topic, 
+		    REG_NOSUB))
+  {
+    GNUNET_break (0);
+    GNUNET_free (subscription);
+    GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
+    return;
+  }
   subscription->request_id = subscribe_msg->request_id;
   subscription->client = find_active_client (client);
-
-  get_regex(topic, &regex_topic);
- 
-  subscription->automaton = GNUNET_REGEX_construct_dfa(regex_topic, strlen(regex_topic), 1);
  
   GNUNET_CONTAINER_slist_add (subscriptions,
                               GNUNET_CONTAINER_SLIST_DISPOSITION_STATIC,
                               subscription, sizeof (struct Subscription));
   subscription->regex_announce_handle =
-    GNUNET_REGEX_announce (dht_handle, (struct GNUNET_PeerIdentity *) my_id,
+    GNUNET_REGEX_announce (dht_handle, &my_id,
                            regex_topic,1 , NULL);
 
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
@@ -1105,7 +1151,8 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
  * appropriate subscribing application.
  */
 static void
-deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, struct RegexSearchContext *context)
+deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, 
+			  struct RegexSearchContext *context)
 {
   char *topic, *prefixed_topic;
   struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
@@ -1128,7 +1175,7 @@ deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, struct R
   {
     struct Subscription *subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
 
-    if (0 == GNUNET_REGEX_eval(subscription->automaton, prefixed_topic))
+    if (0 == regexec (&subscription->automaton, prefixed_topic, 0, NULL, 0))
     {
       struct PendingMessage *pm;
       struct GNUNET_MQTT_ClientPublishMessage *return_msg;
@@ -1174,9 +1221,7 @@ deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, struct R
 static int
 handle_incoming_publish (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
                          void **tunnel_ctx,
-                         const struct GNUNET_PeerIdentity *sender,
-                         const struct GNUNET_MessageHeader *msg,
-                         const struct GNUNET_ATS_Information *atsi)
+                         const struct GNUNET_MessageHeader *msg)
 {
   deliver_incoming_publish ((struct GNUNET_MQTT_ClientPublishMessage*) msg,
                             NULL);
@@ -1188,40 +1233,11 @@ handle_incoming_publish (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
 static int
 handle_tunnel_message (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
                        void **tunnel_ctx,
-                       const struct GNUNET_PeerIdentity *sender,
-                       const struct GNUNET_MessageHeader *msg,
-                       const struct GNUNET_ATS_Information *atsi)
+                       const struct GNUNET_MessageHeader *msg)
 {
   return GNUNET_OK;
 }
 
-
-/**
- * Task responsible for reannouncing regexes of active subscriptions.
- *
- * @param cls unused
- * @param tc unused
- */
-static void
-reannounce_subscriptions (void *cls,
-                          const struct GNUNET_SCHEDULER_TaskContext *tc)
-{
-  struct GNUNET_CONTAINER_SList_Iterator it;
-
-  it = GNUNET_CONTAINER_slist_begin (subscriptions);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
-  {
-    struct Subscription *subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
-
-    GNUNET_REGEX_reannounce (subscription->regex_announce_handle);
-    GNUNET_CONTAINER_slist_next (&it);
-  }
-
-  reannounce_task = GNUNET_SCHEDULER_add_delayed (subscription_reannounce_time,
-                                                  reannounce_subscriptions,
-                                                  NULL);
-}
 
 
 static int
@@ -1319,32 +1335,20 @@ shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
                                          NULL);
 
   GNUNET_DHT_disconnect (dht_handle);
-  GNUNET_CORE_disconnect (core_handle);
   GNUNET_MESH_disconnect (mesh_handle);
   GNUNET_CONTAINER_slist_destroy (subscriptions);
   GNUNET_CONTAINER_slist_destroy (search_contexts);
   GNUNET_CONTAINER_multihashmap_destroy (remote_subscribers);
 
-  GNUNET_SCHEDULER_cancel (reannounce_task);
   GNUNET_SERVER_disconnect_notify_cancel (server_handle,
                                           handle_client_disconnect, NULL);
 }
 
 
-static void
-core_connected_callback (void *cls,
-                         struct GNUNET_CORE_Handle * server,
-                         const struct GNUNET_PeerIdentity * my_identity)
-{
-  my_id = my_identity;
-}
-
-
-
 static void*
 new_incoming_tunnel_callback (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
                               const struct GNUNET_PeerIdentity *initiator,
-                              const struct GNUNET_ATS_Information *atsi)
+			      uint32_t port)
 {
   return NULL;
 }
@@ -1482,22 +1486,11 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
     {&handle_tunnel_message, GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE, 0},
     {NULL, 0, 0}
   };
-  static const GNUNET_MESH_ApplicationType types[] = {
+  static const uint32_t ports[] = {
+    FIXME_PORT,
     GNUNET_APPLICATION_TYPE_END
   };
 
-  if (GNUNET_OK !=
-      GNUNET_CONFIGURATION_get_value_time (c, "mqtt",
-                                           "SUBSCRIPTION_REANNOUNCE_TIME",
-                                           &subscription_reannounce_time))
-  {
-    GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-                _("%s service is lacking key configuration settings (%s). "
-                  "Exiting.\n"),
-                "mqtt", "subscription reannounce time");
-    GNUNET_SCHEDULER_shutdown ();
-    return;
-  }
   
   if (GNUNET_OK !=
       GNUNET_CONFIGURATION_get_value_time (c, "mqtt",
@@ -1517,13 +1510,15 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
   remote_subscribers = GNUNET_CONTAINER_multihashmap_create (8, GNUNET_NO);
 
   server_handle = server;
-  core_handle = GNUNET_CORE_connect (c, NULL, core_connected_callback, NULL,
-                                     NULL, NULL, GNUNET_NO, NULL, GNUNET_NO,
-                                     NULL);
+  GNUNET_assert (GNUNET_OK ==
+		 GNUNET_CRYPTO_get_host_identity (c,
+						  &my_id));
   dht_handle = GNUNET_DHT_connect (c, 32);
-  mesh_handle = GNUNET_MESH_connect (c, NULL, new_incoming_tunnel_callback,
-                                     incoming_tunnel_destroyed_callback,
-                                     mesh_handlers, types);
+  mesh_handle = GNUNET_MESH_connect (c, 
+				     NULL, 
+				     &new_incoming_tunnel_callback,
+                                     &incoming_tunnel_destroyed_callback,
+                                     mesh_handlers, ports);
 
   cfg = c;
   GNUNET_SERVER_add_handlers (server, handlers);
@@ -1531,10 +1526,6 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
 
   GNUNET_SCHEDULER_add_delayed (GNUNET_TIME_UNIT_FOREVER_REL, &shutdown_task,
                                 NULL);
-  reannounce_task = GNUNET_SCHEDULER_add_delayed (subscription_reannounce_time,
-                                                  reannounce_subscriptions,
-                                                  NULL);
-
   look_for_old_messages ();	
 }
 

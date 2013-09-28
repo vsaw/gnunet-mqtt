@@ -795,14 +795,6 @@ GNUNET_MQTT_publish (struct GNUNET_MQTT_Handle *handle, uint8_t topic_len,
     GNUNET_break (0);
     return NULL;
   }
-
-   if (0 == validate_publish_topic(topic))
-  {
-	GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-              "Unvalid publish topic!\n");
-    return NULL;    
-  
-  }
   ph = GNUNET_malloc (sizeof (struct GNUNET_MQTT_PublishHandle));
   ph->mqtt_handle = handle;
   ph->cont = cont;
@@ -899,15 +891,6 @@ GNUNET_MQTT_subscribe (struct GNUNET_MQTT_Handle *handle, uint8_t topic_len,
 
   GNUNET_assert (NULL != cb);
   tsize = sizeof (struct GNUNET_MQTT_ClientSubscribeMessage) + topic_len;
-  
-  if (0 == validate_subscribe_topic(topic))
-  {
-	GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-              "Unvalid subscribe topic\n!");
-    return NULL;    
-  
-  }
-
   sh = GNUNET_malloc (sizeof (struct GNUNET_MQTT_SubscribeHandle));
   sh->mqtt_handle = handle;
   sh->cont = cont;

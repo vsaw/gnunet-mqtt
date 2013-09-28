@@ -20,14 +20,15 @@ pkgcfgdir= $(prefix)/share/gnunet/config.d/
 
 libexecdir= $(prefix)/lib/gnunet/libexec/
 
-noinst_LTLIBRARIES = libregexutils.la
-libregexutils_la_SOURCES = regex_utils.c
-libregexutils_la_LDFLAGS = \
-  $(GNUNET_LDFLAGS) -lgnunetregex 
+#noinst_LTLIBRARIES = libregexutils.la
+#libregexutils_la_SOURCES = regex_utils.c
+#libregexutils_la_LDFLAGS = \
+#  $(GNUNET_LDFLAGS) -lgnunetregex 
 
 
 libgnunetmqtt_la_SOURCES = \
-  mqtt_api.c regex_utils.c
+  mqtt_api.c
+# regex_utils.c
 libgnunetmqtt_la_LDFLAGS = \
   $(GNUNET_LDFLAGS) -lgnunetregex  $(WINFLAGS) \
   -version-info 0:0:0
@@ -41,7 +42,9 @@ gnunet_service_mqtt_SOURCES = \
   gnunet-service-mqtt.c
 gnunet_service_mqtt_LDADD = \
   -lgnunetutil -lgnunetcore -lgnunetdht -lgnunetregex -lgnunethello \
-  -lgnunetmesh $(top_builddir)/src/mqtt/libregexutils.la  $(INTLLIBS)
+  -lgnunetmesh \
+  $(INTLLIBS)
+# $(top_builddir)/src/mqtt/libregexutils.la 
 gnunet_service_mqtt_LDFLAGS = \
   $(GNUNET_LDFLAGS)  $(WINFLAGS) -export-dynamic
 
