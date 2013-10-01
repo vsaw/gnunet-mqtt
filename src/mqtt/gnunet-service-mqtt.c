@@ -56,7 +56,7 @@ struct RegexSearchContext
   /**
    * Set of peers interested in the message associated with this context
    */
-  struct GNUNET_CONTAINER_MultiHashMap *subscribers;
+  struct GNUNET_CONTAINER_MultiPeerMap *subscribers;
 
   /**
    * Flag to mark a message as delivered in order to trigger its
@@ -257,7 +257,7 @@ static struct ClientInfo *client_tail;
 /**
  * Map storing data identifying remote subscribers.
  */
-static struct GNUNET_CONTAINER_MultiHashMap *remote_subscribers;
+static struct GNUNET_CONTAINER_MultiPeerMap *remote_subscribers;
 
 /**
  * Generator for unique ids.
@@ -534,7 +534,7 @@ regex_search_context_free (struct RegexSearchContext *context)
     }
   }
 
-  GNUNET_CONTAINER_multihashmap_destroy (context->subscribers);
+  GNUNET_CONTAINER_multipeermap_destroy (context->subscribers);
   GNUNET_REGEX_search_cancel (context->regex_search_handle);
   GNUNET_free (context->publish_msg);
   GNUNET_free (context->file_path);
@@ -749,16 +749,16 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
    * other matching subscriptions; ignore this search result if that is
    * the case.
    */
-  if (GNUNET_CONTAINER_multihashmap_contains (context->subscribers,
-                                              &id->hashPubKey))
+  if (GNUNET_CONTAINER_multipeermap_contains (context->subscribers,
+                                              id))
     return;
 
-  GNUNET_CONTAINER_multihashmap_put (context->subscribers, &id->hashPubKey,
+  GNUNET_CONTAINER_multipeermap_put (context->subscribers, id,
     NULL, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
-  subscriber = GNUNET_CONTAINER_multihashmap_get (remote_subscribers,
-                                                  &id->hashPubKey);
+  subscriber = GNUNET_CONTAINER_multipeermap_get (remote_subscribers,
+                                                  id);
 
-  if (0 == GNUNET_CRYPTO_hash_cmp (&id->hashPubKey, &my_id.hashPubKey))
+  if (0 == memcmp (id, &my_id, sizeof (struct GNUNET_PeerIdentity)))
   {
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
                 "fast tracking PUBLISH message to local subscribers\n");
@@ -791,7 +791,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
 
     subscriber->id = *id;
 
-    GNUNET_CONTAINER_multihashmap_put (remote_subscribers, &id->hashPubKey,
+    GNUNET_CONTAINER_multipeermap_put (remote_subscribers, id,
       subscriber, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
   }
 
@@ -821,7 +821,7 @@ search_for_subscribers (const char *topic,
   context->file_path = file_path;
   context->message_delivered = GNUNET_NO;
   context->free_task = GNUNET_SCHEDULER_NO_TASK;
-  context->subscribers = GNUNET_CONTAINER_multihashmap_create (1, GNUNET_NO);
+  context->subscribers = GNUNET_CONTAINER_multipeermap_create (1, GNUNET_NO);
   context->regex_search_handle = GNUNET_REGEX_search (dht_handle, topic,
                                                       subscribed_peer_found,
                                                       context, NULL);
@@ -1238,7 +1238,8 @@ handle_tunnel_message (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
 
 
 static int
-free_remote_subscriber_iterator (void *cls, const struct GNUNET_HashCode *key,
+free_remote_subscriber_iterator (void *cls, 
+				 const struct GNUNET_PeerIdentity *key,
                                  void *value)
 {
   remote_subscriber_info_free (value);
@@ -1327,7 +1328,7 @@ shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
     regex_search_context_free (context);
   }
 
-  GNUNET_CONTAINER_multihashmap_iterate (remote_subscribers,
+  GNUNET_CONTAINER_multipeermap_iterate (remote_subscribers,
                                          free_remote_subscriber_iterator,
                                          NULL);
 
@@ -1335,7 +1336,7 @@ shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
   GNUNET_MESH_disconnect (mesh_handle);
   GNUNET_CONTAINER_slist_destroy (subscriptions);
   GNUNET_CONTAINER_slist_destroy (search_contexts);
-  GNUNET_CONTAINER_multihashmap_destroy (remote_subscribers);
+  GNUNET_CONTAINER_multipeermap_destroy (remote_subscribers);
 
   GNUNET_SERVER_disconnect_notify_cancel (server_handle,
                                           handle_client_disconnect, NULL);
@@ -1497,7 +1498,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
 
   subscriptions = GNUNET_CONTAINER_slist_create ();
   search_contexts = GNUNET_CONTAINER_slist_create ();
-  remote_subscribers = GNUNET_CONTAINER_multihashmap_create (8, GNUNET_NO);
+  remote_subscribers = GNUNET_CONTAINER_multipeermap_create (8, GNUNET_NO);
 
   server_handle = server;
   GNUNET_assert (GNUNET_OK ==
