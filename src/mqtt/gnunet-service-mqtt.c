@@ -1502,7 +1502,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
 
   server_handle = server;
   GNUNET_assert (GNUNET_OK ==
-		 GNUNET_CRYPTO_get_host_identity (c,
+		 GNUNET_CRYPTO_get_peer_identity (c,
 						  &my_id));
   dht_handle = GNUNET_DHT_connect (c, 32);
   mesh_handle = GNUNET_MESH_connect (c, 
