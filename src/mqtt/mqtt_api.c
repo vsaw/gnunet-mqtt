@@ -284,20 +284,23 @@ process_pending_messages (struct GNUNET_MQTT_Handle *handle);
  * @param tc scheduler context
  */
 static void
-try_reconnect (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
+try_reconnect (void *cls,
+	       const struct GNUNET_SCHEDULER_TaskContext *tc)
 {
   struct GNUNET_MQTT_Handle *handle = cls;
 
-  LOG (GNUNET_ERROR_TYPE_DEBUG, "Reconnecting with MQTT %p\n", handle);
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Reconnecting with MQTT %p\n",
+       handle);
   handle->retry_time = GNUNET_TIME_STD_BACKOFF (handle->retry_time);
   handle->reconnect_task = GNUNET_SCHEDULER_NO_TASK;
 
   if (GNUNET_YES != try_connect (handle))
   {
-    LOG (GNUNET_ERROR_TYPE_DEBUG, "MQTT reconnect failed\n");
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
+	 "MQTT reconnect failed\n");
     return;
   }
-
   process_pending_messages (handle);
 }
 
@@ -314,15 +317,16 @@ do_disconnect (struct GNUNET_MQTT_Handle *handle)
     return;
   GNUNET_assert (GNUNET_SCHEDULER_NO_TASK == handle->reconnect_task);
   if (NULL != handle->th)
+  {
     GNUNET_CLIENT_notify_transmit_ready_cancel (handle->th);
-  handle->th = NULL;
+    handle->th = NULL;
+  }
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
               "Disconnecting from MQTT service, will try to reconnect in %s\n",
               GNUNET_STRINGS_relative_time_to_string (handle->retry_time,
               GNUNET_YES));
   GNUNET_CLIENT_disconnect (handle->client);
   handle->client = NULL;
-
   handle->reconnect_task =
     GNUNET_SCHEDULER_add_delayed (handle->retry_time, &try_reconnect, handle);
 }
@@ -343,7 +347,6 @@ GNUNET_MQTT_connect (const struct GNUNET_CONFIGURATION_Handle *cfg)
   handle->cfg = cfg;
   handle->uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
                                               UINT64_MAX);
-
   if (GNUNET_NO == try_connect (handle))
   {
     GNUNET_MQTT_disconnect (handle);
@@ -370,7 +373,6 @@ GNUNET_MQTT_disconnect (struct GNUNET_MQTT_Handle *handle)
     GNUNET_CLIENT_notify_transmit_ready_cancel (handle->th);
     handle->th = NULL;
   }
-
   while (NULL != (pm = handle->pending_head))
   {
     GNUNET_assert (GNUNET_YES == pm->in_pending_queue);
@@ -383,13 +385,11 @@ GNUNET_MQTT_disconnect (struct GNUNET_MQTT_Handle *handle)
 
     GNUNET_free (pm);
   }
-
   if (NULL != handle->client)
   {
     GNUNET_CLIENT_disconnect (handle->client);
     handle->client = NULL;
   }
-
   GNUNET_free (handle);
 }
 
@@ -401,7 +401,8 @@ GNUNET_MQTT_disconnect (struct GNUNET_MQTT_Handle *handle)
  * @param tc scheduler context
  */
 static void
-publish_timeout (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
+publish_timeout (void *cls,
+		 const struct GNUNET_SCHEDULER_TaskContext *tc)
 {
   struct GNUNET_MQTT_PublishHandle *ph = cls;
   struct GNUNET_MQTT_Handle *handle = ph->mqtt_handle;
@@ -442,10 +443,8 @@ subscribe_timeout (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
     sh->pending->timeout_task = GNUNET_SCHEDULER_NO_TASK;
     GNUNET_free (sh->pending);
   }
-
   if (NULL != sh->cont)
     sh->cont (sh->cont_cls, GNUNET_NO);
-
   GNUNET_free (sh);
 }
 
@@ -461,18 +460,19 @@ subscribe_timeout (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
  */
 static int
 process_incoming_publish_message (struct GNUNET_MQTT_Handle *handle,
-                                  const struct GNUNET_MQTT_ClientPublishMessage
-                                    *msg)
+                                  const struct GNUNET_MQTT_ClientPublishMessage *msg)
 {
   struct GNUNET_MQTT_SubscribeHandle *sh;
-  char *topic, *message;
+  char *topic;
+  char *message;
   size_t message_len;
 
   for (sh = handle->subscribe_head; NULL != sh; sh = sh->next)
     if (sh->request_id == msg->request_id)
       break;
 
-  if (NULL == sh) {
+  if (NULL == sh)
+  {
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
                 "Received PUBLISH message matching no subscriptions\n");
     return GNUNET_SYSERR;
@@ -480,14 +480,14 @@ process_incoming_publish_message (struct GNUNET_MQTT_Handle *handle,
 
   /* Extract topic */
   topic = GNUNET_malloc (msg->topic_len);
-  strncpy(topic, (char *) (msg + 1), msg->topic_len);
+  strncpy (topic, (const char *) (msg + 1), msg->topic_len);
   topic[msg->topic_len - 1] = '\0';
 
   /* Extract message */
   message_len = ntohs (msg->header.size) -
     sizeof (struct GNUNET_MQTT_ClientPublishMessage) - msg->topic_len;
   message = GNUNET_malloc (message_len);
-  strncpy(message, ((char *) (msg + 1)) + msg->topic_len,
+  strncpy(message, ((const char *) (msg + 1)) + msg->topic_len,
           message_len);
   message[message_len - 1] = '\0';
 
@@ -914,10 +914,9 @@ GNUNET_MQTT_subscribe (struct GNUNET_MQTT_Handle *handle, uint8_t topic_len,
   subscribe_msg->header.type = htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE);
   subscribe_msg->request_id = sh->request_id;
   subscribe_msg->topic_len = topic_len;
-
   memcpy (&subscribe_msg[1], topic, topic_len);
- 
-  GNUNET_CONTAINER_DLL_insert (handle->pending_head, handle->pending_tail,
+  GNUNET_CONTAINER_DLL_insert (handle->pending_head, 
+			       handle->pending_tail,
                                pending);
   pending->in_pending_queue = GNUNET_YES;
   pending->wait_for_response = GNUNET_YES;

@@ -35,13 +35,23 @@
 #include "mqtt.h"
 #include <regex.h>
 
-#define FIXME_PORT 424
 
 /**
  * Struct representing the context for the regex search
  */
 struct RegexSearchContext
 {
+
+  /**
+   * Pointer to next item in the list
+   */
+  struct RegexSearchContext *next;
+  
+  /**
+   * Pointer to previous item in the list
+   */
+  struct RegexSearchContext *prev;
+
   /**
    * Pointer to the publish message
    */
@@ -76,6 +86,7 @@ struct RegexSearchContext
   struct GNUNET_REGEX_search_handle *regex_search_handle;
 };
 
+
 /**
  * Struct representing a message that needs to be sent to a client.
  */
@@ -102,6 +113,7 @@ struct PendingMessage
    */
   struct RegexSearchContext *context;
 };
+
 
 /**
  * Struct containing information about a client,
@@ -194,6 +206,16 @@ struct RemoteSubscriberInfo
 struct Subscription
 {
   /**
+   * Element in a DLL.
+   */
+  struct Subscription *prev;
+
+  /**
+   * Element in a DLL.
+   */
+  struct Subscription *next;
+
+  /**
    * Handle used to cancel the annnouncement
    */
   struct GNUNET_REGEX_announce_handle *regex_announce_handle;
@@ -213,6 +235,7 @@ struct Subscription
    */
   regex_t automaton;
 };
+
 
 /**
  * Our configuration.
@@ -240,9 +263,14 @@ static struct GNUNET_MESH_Handle *mesh_handle;
 static struct GNUNET_PeerIdentity my_id;
 
 /**
- * Singly linked list storing active subscriptions.
+ * Head of active subscriptions.
  */
-static struct GNUNET_CONTAINER_SList *subscriptions;
+static struct Subscription *subscription_head;
+
+/**
+ * Head of active subscriptions.
+ */
+static struct Subscription *subscription_tail;
 
 /**
  * List of active clients.
@@ -267,12 +295,17 @@ static uint64_t uid_gen;
 /**
  * Path to the current directory (configuration directory)
  */
-static char *current_dir_name;
+static char *folder_name;
 
 /**
- * Singly linked list storing active regex search contexts.
+ * Tail of doubly-Linked list storing active regex search contexts.
  */
-static struct GNUNET_CONTAINER_SList *search_contexts;
+static struct RegexSearchContext *sc_head;
+
+/**
+ * Tail of doubly-Linked list storing active regex search contexts.
+ */
+static struct RegexSearchContext *sc_tail;
 
 /**
  * The time the peer that received a publish message waits before it deletes it after it was sent to a subscrier
@@ -294,33 +327,33 @@ static const char *plus_regex = "(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|
  */
 static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+)*";
 
+
 /**
  * Adds the prefix to the toopic (App ID + Version + Padding)
  *
  * @param topic topic of subscription as provided by the subscriber
  * @param regex_topic client identification of the client
- * 
  */
 static void
-add_prefix (const char *topic, char **prefixed_topic)
+add_prefix (const char *topic, 
+	    char **prefixed_topic)
 {
-	int n, i;
-	*prefixed_topic = GNUNET_malloc(strlen(prefix) + strlen(topic)+1);
-	n = 0;
-	 
-	for (i = 0; prefix[i] != '\0'; i++) 
-  {
+  int n;
+  int i;
+
+  *prefixed_topic = GNUNET_malloc(strlen(prefix) + strlen(topic)+1);
+  n = 0;  
+  for (i = 0; prefix[i] != '\0'; i++) 
     (*prefixed_topic)[i] = prefix[i];
-	}
-	n = i;
-	
-	for (i = 0; topic[i] != '\0'; i++) 
+  n = i;
+  
+  for (i = 0; topic[i] != '\0'; i++) 
   {
     (*prefixed_topic)[n] = topic[i];
-	n++;
-	}
-	
-	 (*prefixed_topic)[n] = '\0';
+    n++;
+  }
+  
+  (*prefixed_topic)[n] = '\0';
 }
 	
 
@@ -329,33 +362,35 @@ add_prefix (const char *topic, char **prefixed_topic)
  *
  * @param topic topic of subscription as provided by the subscriber
  * @param regex_topic client identification of the client
- * 
  */
 static void
-get_regex (char *topic, char **regex_topic)
+get_regex (char *topic, 
+	   char **regex_topic)
 {
   char *plus;
   char *hash;
   char *prefixed_topic;
-  int i, j, k; 
+  int i;
+  int j;
+  int k; 
   int plus_counter = 0;
   int hash_exists = 0;
   
   plus = strchr(topic,'+');
-   while (plus != NULL)
+  while (plus != NULL)
   {
-	plus_counter +=1;
-	plus=strchr(plus+1,'+');
-	} 		
+    plus_counter +=1;
+    plus=strchr(plus+1,'+');
+  } 		
   hash = strchr(topic,'#');
   if (hash != NULL)
   {
-	hash_exists = 1;
+    hash_exists = 1;
   }
   
   add_prefix(topic, &prefixed_topic); 
   
-  *regex_topic = GNUNET_malloc(strlen(prefixed_topic) - plus_counter - hash_exists + plus_counter*strlen(plus_regex) + hash_exists*strlen(hash_regex)+1);
+  *regex_topic = GNUNET_malloc (strlen(prefixed_topic) - plus_counter - hash_exists + plus_counter*strlen(plus_regex) + hash_exists*strlen(hash_regex)+1);
   j = 0;
   for (i = 0; prefixed_topic[i] != '\0'; i++) 
   {
@@ -375,15 +410,15 @@ get_regex (char *topic, char **regex_topic)
 	(*regex_topic)[j] = hash_regex[k];
 	j++;
       }
-     }else
-     {
+    }
+    else
+    {
       (*regex_topic)[j] = prefixed_topic[i];
       j++;
-      }
     }
-    (*regex_topic)[j] = '\0';
   }
-  
+  (*regex_topic)[j] = '\0';
+}
 
 
 /**
@@ -400,11 +435,11 @@ client_info_free (struct ClientInfo *client_info)
 {
   struct PendingMessage *pm;
 
-  if (NULL != client_info->transmit_handle) {
+  if (NULL != client_info->transmit_handle) 
+  {
     GNUNET_SERVER_notify_transmit_ready_cancel (client_info->transmit_handle);
     client_info->transmit_handle = NULL;
   }
-
   while (NULL != (pm = client_info->pending_head))
   {
     GNUNET_CONTAINER_DLL_remove (client_info->pending_head,
@@ -412,7 +447,6 @@ client_info_free (struct ClientInfo *client_info)
     GNUNET_free (pm->msg);
     GNUNET_free (pm);
   }
-
   GNUNET_CONTAINER_DLL_remove (client_head, client_tail, client_info);
   GNUNET_free (client_info);
 }
@@ -440,12 +474,10 @@ find_active_client (struct GNUNET_SERVER_Client *client)
       return pos;
     pos = pos->next;
   }
-
   ret = GNUNET_new (struct ClientInfo);
   ret->client_handle = client;
   ret->transmit_handle = NULL;
   GNUNET_CONTAINER_DLL_insert (client_head, client_tail, ret);
-
   return ret;
 }
 
@@ -488,7 +520,6 @@ remote_subscriber_info_free (struct RemoteSubscriberInfo *subscriber)
     GNUNET_MESH_notify_transmit_ready_cancel (subscriber->transmit_handle);
     subscriber->transmit_handle = NULL;
   }
-
   while (NULL != (pm = subscriber->pending_head))
   {
     GNUNET_CONTAINER_DLL_remove (subscriber->pending_head,
@@ -496,7 +527,6 @@ remote_subscriber_info_free (struct RemoteSubscriberInfo *subscriber)
     GNUNET_free (pm->msg);
     GNUNET_free (pm);
   }
-
   GNUNET_MESH_tunnel_destroy (subscriber->tunnel);
   GNUNET_free (subscriber);
 }
@@ -522,26 +552,17 @@ regex_search_context_free (struct RegexSearchContext *context)
     if (GNUNET_SCHEDULER_NO_TASK != context->free_task)
       GNUNET_SCHEDULER_cancel (context->free_task);
 
-    if (remove (filepath) == 0)
-    {
-      GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-                  "file `%s` deleted successfully.\n", filepath);
-    }
-    else
-    {
-      GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-                  "unable to delete file `%s`\n", filepath);
-    }
+    if (0 != UNLINK (filepath))
+      GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,
+				"unlink", 
+				filepath);
   }
-
   GNUNET_CONTAINER_multipeermap_destroy (context->subscribers);
   GNUNET_REGEX_search_cancel (context->regex_search_handle);
   GNUNET_free (context->publish_msg);
   GNUNET_free (context->file_path);
   GNUNET_free (context);
 }
-
-
 
 
 /**
@@ -555,21 +576,10 @@ delete_delivered_message (void *cls,
                           const struct GNUNET_SCHEDULER_TaskContext *tc)
 {
   struct RegexSearchContext *context = cls;
-  struct GNUNET_CONTAINER_SList_Iterator it;
 
-  it = GNUNET_CONTAINER_slist_begin (search_contexts);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
-  {
-    if (GNUNET_CONTAINER_slist_get (&it, NULL) == context)
-    {
-      GNUNET_CONTAINER_slist_erase (&it);
-      break;
-    }
-    else
-      GNUNET_CONTAINER_slist_next (&it);
-  }
-
+  GNUNET_CONTAINER_DLL_remove (sc_head,
+			       sc_tail,
+			       context);
   context->free_task = GNUNET_SCHEDULER_NO_TASK;
   regex_search_context_free (context);
 }
@@ -609,11 +619,12 @@ process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber);
  * @param cls closure to this call
  * @param size maximum number of bytes available to send
  * @param buf where to copy the actual message to
- *
  * @return the number of bytes actually copied, 0 indicates failure
  */
 static size_t
-send_msg_to_subscriber (void *cls, size_t size, void *buf)
+send_msg_to_subscriber (void *cls, 
+			size_t size,
+			void *buf)
 {
   struct RemoteSubscriberInfo *subscriber = cls;
   char *cbuf = buf;
@@ -623,8 +634,7 @@ send_msg_to_subscriber (void *cls, size_t size, void *buf)
   
   subscriber->transmit_handle = NULL;
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-			"Send message to subscriber.\n");
-
+	      "Send message to subscriber.\n");
   if (buf == NULL)
   {
     /* subscriber disconnected */
@@ -643,15 +653,13 @@ send_msg_to_subscriber (void *cls, size_t size, void *buf)
     GNUNET_CONTAINER_DLL_remove (subscriber->pending_head,
                                  subscriber->pending_tail, pm);
     memcpy (&cbuf[off], pm->msg, msize);
-    
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
                 "Transmitting %u bytes to subscriber %s\n", msize,
                 GNUNET_i2s (&subscriber->id));
     off += msize;
-	set_timer_for_deleting_message(pm);	
-
-	GNUNET_free (pm->msg);
-	GNUNET_free (pm);
+    set_timer_for_deleting_message(pm);	
+    GNUNET_free (pm->msg);
+    GNUNET_free (pm);
   }
 
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
@@ -715,18 +723,19 @@ add_pending_subscriber_message (struct RemoteSubscriberInfo *subscriber,
 
 
 static void
-deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, struct RegexSearchContext *context);
+deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg, 
+			  struct RegexSearchContext *context);
 
 
 /**
  * Search callback function called when a subscribed peer is found.
  *
- * @param cls closure provided in GNUNET_REGEX_search
+ * @param cls closure provided in GNUNET_REGEX_search()
  * @param id peer providing a regex that matches the string
  * @param get_path path of the get request
- * @param get_path_length lenght of get_path
+ * @param get_path_length length of @a get_path
  * @param put_path Path of the put request
- * @param put_path_length length of the put_path
+ * @param put_path_length length of the @a put_path
  */
 static void
 subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
@@ -742,7 +751,8 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
   size_t msg_len = ntohs (context->publish_msg->header.size);
 
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "an active subscription found from %s\n", GNUNET_i2s (id));
+              "an active subscription found from %s\n",
+	      GNUNET_i2s (id));
 
   /*
    * We may have delivered the message to the peer already if it has
@@ -784,7 +794,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
     subscriber->tunnel = GNUNET_MESH_tunnel_create (mesh_handle, 
 						    NULL,
 						    id,
-						    FIXME_PORT,
+						    GNUNET_APPLICATION_TYPE_MQTT,
 						    GNUNET_NO, GNUNET_YES);
     subscriber->peer_added = GNUNET_NO;
     subscriber->peer_connecting = GNUNET_NO;
@@ -807,7 +817,6 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
  *
  * @param topic of the message identification of the client
  * @param publish_msg the publish message
-
  */
 static void
 search_for_subscribers (const char *topic,
@@ -825,10 +834,9 @@ search_for_subscribers (const char *topic,
   context->regex_search_handle = GNUNET_REGEX_search (dht_handle, topic,
                                                       subscribed_peer_found,
                                                       context, NULL);
-
-  GNUNET_CONTAINER_slist_add (search_contexts,
-                              GNUNET_CONTAINER_SLIST_DISPOSITION_STATIC,
-                              context, sizeof (struct RegexSearchContext));
+  GNUNET_CONTAINER_DLL_insert (sc_head,
+			       sc_tail,
+			       context);
 }
 
 
@@ -838,8 +846,6 @@ search_for_subscribers (const char *topic,
  * @param cls closure
  * @param client identification of the client
  * @param message the actual message
- * @return GNUNET_OK to keep the connection open,
- *         GNUNET_SYSERR to close it (signal serious error)
  */
 static void
 handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
@@ -854,7 +860,12 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
   
   size_t msg_len = ntohs (msg->size);
   struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
-
+  
+  if (NULL == folder_name)
+  {
+    GNUNET_break (0);
+    return;
+  }
   /* Extract topic */
   publish_msg = GNUNET_malloc (msg_len);
   memcpy (publish_msg, msg, msg_len);
@@ -869,41 +880,34 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
   strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
           message_len);
   message[message_len - 1] = '\0';
-
   add_prefix (topic, &prefixed_topic);
-   
-  if (NULL != current_dir_name)
+  GNUNET_CRYPTO_hash_create_random (GNUNET_CRYPTO_QUALITY_WEAK,
+				    &file_name_hash);
+  file_name = GNUNET_h2s_full(&file_name_hash);
+  GNUNET_asprintf (&file_path, 
+		   "%s%s%s", 
+		   folder_name,
+		   DIR_SEPARATOR_STR,
+		   file_name);
+    
+  if (NULL != (persistence_file = fopen(file_path, "w+")))
   {
-	 GNUNET_CRYPTO_hash_create_random(GNUNET_CRYPTO_QUALITY_WEAK, &file_name_hash);
-	 file_name = GNUNET_h2s_full(&file_name_hash);
-	 
-	 GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, file_name );
-	 	 
-	 if (NULL != (persistence_file = fopen(file_path, "w+")))
-	 {
-		fwrite(topic, 1, strlen(topic)+1, persistence_file);
-		fwrite(message, 1, strlen(message), persistence_file);
-		fclose(persistence_file);
-		
-		search_for_subscribers (prefixed_topic, publish_msg, file_path);
-	  }
-	  else
-	{
-		GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-              "Not able to open file!");
-	}
-	}	
-	else
-	{
-		GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-              "Not able to get current directory!");
-	}
-  
+    fwrite(topic, 1, strlen(topic)+1, persistence_file);
+    fwrite(message, 1, strlen(message), persistence_file);
+    fclose(persistence_file);  
+    search_for_subscribers (prefixed_topic, publish_msg, file_path);
+  }
+  else
+  {
+    GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR, 
+			      "open",
+			      file_path);
+  }	
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
               "outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
-              topic, publish_msg->topic_len, ntohs(publish_msg->header.size));
- 
-
+              topic, 
+	      publish_msg->topic_len,
+	      ntohs (publish_msg->header.size));
   GNUNET_SERVER_receive_done (client, GNUNET_OK);
 }
 
@@ -914,8 +918,6 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
  * @param cls closure
  * @param client identification of the client
  * @param message the actual message
- * @return GNUNET_OK to keep the connection open,
- *         GNUNET_SYSERR to close it (signal serious error)
  */
 static void
 handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
@@ -932,11 +934,8 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   strncpy(topic, (char *) (subscribe_msg + 1),
           subscribe_msg->topic_len);
   topic[subscribe_msg->topic_len - 1] = '\0';
-
   subscription = GNUNET_new (struct Subscription);
-
   get_regex (topic, &regex_topic);
- 
   if (0 != regcomp (&subscription->automaton,
 		    regex_topic, 
 		    REG_NOSUB))
@@ -948,17 +947,17 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   }
   subscription->request_id = subscribe_msg->request_id;
   subscription->client = find_active_client (client);
- 
-  GNUNET_CONTAINER_slist_add (subscriptions,
-                              GNUNET_CONTAINER_SLIST_DISPOSITION_STATIC,
-                              subscription, sizeof (struct Subscription));
+  GNUNET_CONTAINER_DLL_insert (subscription_head,
+			       subscription_tail,
+			       subscription);
   subscription->regex_announce_handle =
     GNUNET_REGEX_announce (dht_handle, &my_id,
                            regex_topic,1 , NULL);
 
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "MQTT SUBSCRIBE message received: %s->%s\n", topic, regex_topic);
-
+              "MQTT SUBSCRIBE message received: %s->%s\n", 
+	      topic, 
+	      regex_topic);
   GNUNET_SERVER_receive_done (client, GNUNET_OK);
 }
 
@@ -989,7 +988,6 @@ send_reply_to_client (void *cls, size_t size, void *buf)
   size_t msize;
 
   client->transmit_handle = NULL;
-
   if (buf == NULL)
   {
     /* client disconnected */
@@ -998,31 +996,31 @@ send_reply_to_client (void *cls, size_t size, void *buf)
                 client->client_handle);
     return 0;
   }
-
   off = 0;
-
   while ((NULL != (reply = client->pending_head)) &&
          (size >= off + (msize = ntohs (reply->msg->size))))
   {
     GNUNET_CONTAINER_DLL_remove (client->pending_head, client->pending_tail,
                                  reply);
     memcpy (&cbuf[off], reply->msg, msize);
-	if (NULL != reply->context)
-	{
-		set_timer_for_deleting_message(reply);
-	}
+    if (NULL != reply->context)
+    {
+      set_timer_for_deleting_message(reply);
+    }
     GNUNET_free (reply->msg);
     GNUNET_free (reply);
     GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-                "Transmitting %u bytes to client %p\n", msize,
+                "Transmitting %u bytes to client %p\n", 
+		msize,
                 client->client_handle);
     off += msize;
   }
-
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "Transmitted %u/%u bytes to client %p\n",
-              (unsigned int) off, (unsigned int) size, client->client_handle);
+  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+	      "Transmitted %u/%u bytes to client %p\n",
+              (unsigned int) off, 
+	      (unsigned int) size, 
+	      client->client_handle);
   process_pending_client_messages (client);
-
   return off;
 }
 
@@ -1045,11 +1043,10 @@ process_pending_client_messages (struct ClientInfo *client)
                 NULL ? "no more messages" : "request already pending");
     return;
   }
-
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
               "Asking for transmission of %u bytes to client %p\n",
-              ntohs (client->pending_head->msg->size), client->client_handle);
-
+              ntohs (client->pending_head->msg->size), 
+	      client->client_handle);
   client->transmit_handle =
     GNUNET_SERVER_notify_transmit_ready (client->client_handle,
                                          ntohs (client->pending_head->
@@ -1081,34 +1078,27 @@ add_pending_client_message (struct ClientInfo *client,
  * @param cls closure
  * @param client identification of the client
  * @param message the actual message
- * @return GNUNET_OK to keep the connection open,
- *         GNUNET_SYSERR to close it (signal serious error)
  */
 static void
 handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
                          const struct GNUNET_MessageHeader *msg)
 {
   struct PendingMessage *pm;
-  struct GNUNET_CONTAINER_SList_Iterator it;
   const struct GNUNET_MQTT_ClientUnsubscribeMessage *unsubscribe_msg;
   struct GNUNET_MQTT_ClientUnsubscribeAckMessage *unsub_ack_msg;
   struct ClientInfo *client_info;
-  struct Subscription *subscription = NULL;
+  struct Subscription *subscription;
 
   unsubscribe_msg = (const struct GNUNET_MQTT_ClientUnsubscribeMessage *) msg;
-
-  for (it = GNUNET_CONTAINER_slist_begin (subscriptions);
-       GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES;)
+  for (subscription = subscription_head; NULL != subscription; subscription = subscription->next)
   {
-    subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
-
     if (subscription->request_id == unsubscribe_msg->request_id)
     {
-      GNUNET_CONTAINER_slist_erase (&it);
+      GNUNET_CONTAINER_DLL_remove (subscription_head,
+				   subscription_tail,
+				   subscription);;
       break;
     }
-
-    GNUNET_CONTAINER_slist_next (&it);
   }
 
   if (NULL == subscription)
@@ -1116,10 +1106,10 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
     GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
                 "Active subscription with ID %lu does not exist\n",
                 subscription->request_id);
-	return;
+    return;
   }
-
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "Cancelling subscription with ID %lu\n",
+  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, 
+	      "Cancelling subscription with ID %lu\n",
               subscription->request_id);
 
   client_info = find_active_client (client);
@@ -1134,10 +1124,8 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
 
   pm = GNUNET_new (struct PendingMessage);
   pm->msg = (struct GNUNET_MessageHeader*) unsub_ack_msg;
-
   add_pending_client_message (client_info, pm);
   subscription_free (subscription);
-
   GNUNET_SERVER_receive_done (client, GNUNET_OK);
 }
 
@@ -1149,12 +1137,13 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
  * appropriate subscribing application.
  */
 static void
-deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg, 
+deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg, 
 			  struct RegexSearchContext *context)
 {
-  char *topic, *prefixed_topic;
+  char *topic;
+  char *prefixed_topic;
   struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
-  struct GNUNET_CONTAINER_SList_Iterator it;
+  struct Subscription *subscription;
   size_t msg_len = ntohs (msg->header.size);
   int free_publish_msg = GNUNET_YES;
 
@@ -1162,24 +1151,23 @@ deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg,
   publish_msg = GNUNET_malloc (msg_len);
   memcpy (publish_msg, msg, msg_len);
   topic = GNUNET_malloc (publish_msg->topic_len);
-  strncpy(topic, (char *) (publish_msg + 1), publish_msg->topic_len);
+  strncpy (topic, 
+	   (const char *) &publish_msg[1], 
+	   publish_msg->topic_len);
   topic[publish_msg->topic_len - 1] = '\0';
   
   add_prefix(topic, &prefixed_topic);
 
-  it = GNUNET_CONTAINER_slist_begin (subscriptions);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
+  for (subscription = subscription_head; NULL != subscription; subscription = subscription->next)
   {
-    struct Subscription *subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
-
     if (0 == regexec (&subscription->automaton, prefixed_topic, 0, NULL, 0))
     {
       struct PendingMessage *pm;
       struct GNUNET_MQTT_ClientPublishMessage *return_msg;
       struct ClientInfo *client_info = subscription->client;
 
-      if (GNUNET_YES == free_publish_msg) {
+      if (GNUNET_YES == free_publish_msg) 
+      {
         return_msg = publish_msg;
         free_publish_msg = GNUNET_NO;
       }
@@ -1188,25 +1176,17 @@ deliver_incoming_publish (struct GNUNET_MQTT_ClientPublishMessage *msg,
         return_msg = GNUNET_malloc (msg_len);
         memcpy (return_msg, msg, msg_len);
       }
-
       return_msg->request_id = subscription->request_id;
-
       pm = GNUNET_new (struct PendingMessage);
       pm->msg = (struct GNUNET_MessageHeader*) return_msg;
-	  pm->context = context;
-
+      pm->context = context;
       add_pending_client_message (client_info, pm);
     }
-
-    GNUNET_CONTAINER_slist_next (&it);
   }
-
   GNUNET_free (topic);
   GNUNET_free (prefixed_topic);
-
-  if (GNUNET_YES == free_publish_msg) {
+  if (GNUNET_YES == free_publish_msg) 
     GNUNET_free (publish_msg);
-  }
 }
 
 
@@ -1221,7 +1201,7 @@ handle_incoming_publish (void *cls, struct GNUNET_MESH_Tunnel *tunnel,
                          void **tunnel_ctx,
                          const struct GNUNET_MessageHeader *msg)
 {
-  deliver_incoming_publish ((struct GNUNET_MQTT_ClientPublishMessage*) msg,
+  deliver_incoming_publish ((const struct GNUNET_MQTT_ClientPublishMessage*) msg,
                             NULL);
 
   return GNUNET_OK;
@@ -1254,43 +1234,31 @@ free_remote_subscriber_iterator (void *cls,
  * @param client identification of the client
  */
 static void
-handle_client_disconnect (void *cls, struct GNUNET_SERVER_Client *client)
+handle_client_disconnect (void *cls,
+			  struct GNUNET_SERVER_Client *client)
 {
-  struct GNUNET_CONTAINER_SList_Iterator it;
+  struct Subscription *subscription;
+  struct Subscription *nxt;
   struct ClientInfo *client_info = NULL;
 
   if (NULL == client)
     return;
-
-  it = GNUNET_CONTAINER_slist_begin (subscriptions);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
+  for (subscription=subscription_head; NULL != subscription; subscription = nxt)
   {
-    struct Subscription *subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
-
+    nxt = subscription->next;
     if (subscription->client->client_handle == client)
     {
       client_info = subscription->client;
-      GNUNET_CONTAINER_slist_erase (&it);
+      GNUNET_CONTAINER_DLL_remove (subscription_head,
+				   subscription_tail,
+				   subscription);
       subscription_free (subscription);
     }
-    else
-      GNUNET_CONTAINER_slist_next (&it);
   }
-
   if (NULL == client_info)
-  {
-    client_info = client_head;
-
-    while (client_info != NULL)
-    {
+    for (client_info = client_head; NULL != client_info; client_info = client_info->next)    
       if (client_info->client_handle == client)
         break;
-
-      client_info = client_info->next;
-    }
-  }
-
   if (NULL != client_info)
     client_info_free (client_info);
 }
@@ -1303,43 +1271,32 @@ handle_client_disconnect (void *cls, struct GNUNET_SERVER_Client *client)
  * @param tc unused
  */
 static void
-shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
+shutdown_task (void *cls, 
+	       const struct GNUNET_SCHEDULER_TaskContext *tc)
 {
-  struct GNUNET_CONTAINER_SList_Iterator it;
+  struct Subscription *subscription;
+  struct RegexSearchContext *context;
 
-  it = GNUNET_CONTAINER_slist_begin (subscriptions);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
+  while (NULL != (subscription = subscription_head))
   {
-    struct Subscription *subscription = GNUNET_CONTAINER_slist_get (&it, NULL);
-
-    GNUNET_CONTAINER_slist_erase (&it);
+    GNUNET_CONTAINER_DLL_remove (subscription_head,
+				 subscription_tail,
+				 subscription);
     subscription_free (subscription);
   }
-
-  it = GNUNET_CONTAINER_slist_begin (search_contexts);
-
-  while (GNUNET_CONTAINER_slist_end (&it) != GNUNET_YES)
+  while (NULL != (context = sc_head))
   {
-    struct RegexSearchContext *context = GNUNET_CONTAINER_slist_get (&it,
-                                                                     NULL);
-
-    GNUNET_CONTAINER_slist_erase (&it);
+    GNUNET_CONTAINER_DLL_remove (sc_head,
+				 sc_tail,
+				 context);
     regex_search_context_free (context);
   }
-
   GNUNET_CONTAINER_multipeermap_iterate (remote_subscribers,
                                          free_remote_subscriber_iterator,
                                          NULL);
-
   GNUNET_DHT_disconnect (dht_handle);
   GNUNET_MESH_disconnect (mesh_handle);
-  GNUNET_CONTAINER_slist_destroy (subscriptions);
-  GNUNET_CONTAINER_slist_destroy (search_contexts);
   GNUNET_CONTAINER_multipeermap_destroy (remote_subscribers);
-
-  GNUNET_SERVER_disconnect_notify_cancel (server_handle,
-                                          handle_client_disconnect, NULL);
 }
 
 
@@ -1361,95 +1318,104 @@ incoming_tunnel_destroyed_callback (void *cls,
 
 
 /**
- * Look for old messages and call try to deliver them again by calling regex search
- *
+ * Look for old messages and call try to deliver them again by calling
+ * regex search
  */
 static void
 look_for_old_messages ()
 {
-	DIR *dir;
-	FILE *file;
-	char *current_dir;
-	char *folder_name = "mqtt";
-	struct dirent *ent;
-	char *file_path;
-	char *topic, *aux, *prefixed_topic;
-	size_t struct_size;
-    int ch;
-	long long length;
-	struct GNUNET_MQTT_ClientPublishMessage *old_publish_msg;
-	
-	uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
-                                              UINT64_MAX);
-	current_dir_name = NULL;
-	if (GNUNET_OK == GNUNET_CONFIGURATION_get_value_filename(cfg, "PATHS", "SERVICEHOME", &current_dir))
+  DIR *dir;
+  FILE *file;
+  struct dirent *ent;
+  char *file_path;
+  char *topic;
+  char *aux;
+  char *prefixed_topic;
+  size_t struct_size;
+  size_t n;
+  int ch;
+  long long length;
+  struct GNUNET_MQTT_ClientPublishMessage *old_publish_msg;
+  
+  uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
+				      UINT64_MAX);
+  folder_name = NULL;
+  if (GNUNET_OK != 
+      GNUNET_CONFIGURATION_get_value_filename (cfg,
+					       "MQTT",
+					       "MESSAGE_FOLDER",
+					       &folder_name))
   {
-   GNUNET_asprintf (&current_dir_name, "%s%s", current_dir, folder_name);
-	
-	if ((dir = opendir (current_dir_name)) != NULL) 
-	{
-		while ((ent = readdir (dir)) != NULL) {
-				
-			 if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
-				continue;
-			
-			GNUNET_asprintf (&file_path, "%s%s%s", current_dir_name, DIR_SEPARATOR_STR, ent->d_name);
-			file = fopen(file_path, "r");
-            if (file != NULL)
-			{
-                size_t n = 0;
+    GNUNET_log_config_missing (GNUNET_ERROR_TYPE_ERROR,
+			       "MQTT", "MESSAGE_FOLDER");
+    return;
+  }
+  if (NULL == (dir = opendir (folder_name))) 
+  {
+    GNUNET_DISK_directory_create (folder_name);
+    return;
+  }
 
-			    fseeko( file, 0, SEEK_END ); // seek to end
-				length = ftello( file ); // determine offset of end
-				rewind(file);  // restore position
-							
-				struct_size = sizeof(struct GNUNET_MQTT_ClientPublishMessage) + length + 1;
-				
-				old_publish_msg = GNUNET_malloc(struct_size);
-				old_publish_msg->header.size = htons (struct_size);
-				old_publish_msg->header.type = htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH);
-				old_publish_msg->request_id = ++uid_gen;
-				
-				aux = (char*)&old_publish_msg[1];
-				 while ((ch = fgetc(file)) != EOF && (ch != '\0') )
-				{
-				    aux[n] = (char) ch;				    
-					n++;
-				}
-				
-				old_publish_msg->topic_len = n + 1;
-				aux[n] = '\0';
-				n++;
-				 while ((ch = fgetc(file)) != EOF )
-				{
-				    aux[n] = (char) ch;				    
-					n++;
-				}
-				
-				aux[n] = '\0';
-				
-				topic = GNUNET_malloc (old_publish_msg->topic_len);
-				strncpy(topic, (char *) (old_publish_msg + 1), old_publish_msg->topic_len);
-				topic[old_publish_msg->topic_len - 1] = '\0';
-				
-				add_prefix (topic, &prefixed_topic);
-				
-				search_for_subscribers(prefixed_topic, old_publish_msg, file_path);
-				
-				GNUNET_free(topic);
-				}				
-				}
-			closedir (dir);
-	} else {
-	    mkdir(current_dir_name, S_IRWXU);
-		GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "A new folder was created for persisting messages: %s\n", current_dir_name);
-	}
-	}else
-	{
-		GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
-              "Not able to get current directory!");
-	}
+  while (NULL != (ent = readdir (dir)))
+  {
+    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+      continue;
+	  
+    GNUNET_asprintf (&file_path, 
+		     "%s%s%s",
+		     folder_name,
+		     DIR_SEPARATOR_STR,
+		     ent->d_name);
+    file = fopen(file_path, "r");
+    if (NULL == file)
+    {
+      GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,
+				"open",
+				file_path);
+      GNUNET_free (file_path);
+      continue;
+    }
+    n = 0;   
+    fseeko (file, 0, SEEK_END); // seek to end
+    length = ftello (file); // determine offset of end
+    rewind (file);  // restore position
+    
+    struct_size = sizeof(struct GNUNET_MQTT_ClientPublishMessage) + length + 1;
+	    
+    old_publish_msg = GNUNET_malloc(struct_size);
+    old_publish_msg->header.size = htons (struct_size);
+    old_publish_msg->header.type = htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH);
+    old_publish_msg->request_id = ++uid_gen;
+    
+    aux = (char*)&old_publish_msg[1];
+    while ((ch = fgetc(file)) != EOF && (ch != '\0') )
+    {
+      aux[n] = (char) ch;				    
+      n++;
+    }
+    
+    old_publish_msg->topic_len = n + 1;
+    aux[n] = '\0';
+    n++;
+    while ((ch = fgetc(file)) != EOF )
+    {
+      aux[n] = (char) ch;				    
+      n++;
+    }
+    
+    aux[n] = '\0';
+    
+    topic = GNUNET_malloc (old_publish_msg->topic_len);
+    strncpy(topic, (char *) (old_publish_msg + 1), old_publish_msg->topic_len);
+    topic[old_publish_msg->topic_len - 1] = '\0';
+    
+    add_prefix (topic, &prefixed_topic);
+    
+    search_for_subscribers(prefixed_topic, old_publish_msg, file_path);
+    GNUNET_free (file_path);
+    GNUNET_free (topic);
+  }				
+  closedir (dir);
 }
 
 
@@ -1478,7 +1444,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
     {NULL, 0, 0}
   };
   static const uint32_t ports[] = {
-    FIXME_PORT,
+    GNUNET_APPLICATION_TYPE_MQTT,
     GNUNET_APPLICATION_TYPE_END
   };
 
@@ -1495,11 +1461,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
     GNUNET_SCHEDULER_shutdown ();
     return;
   }
-
-  subscriptions = GNUNET_CONTAINER_slist_create ();
-  search_contexts = GNUNET_CONTAINER_slist_create ();
   remote_subscribers = GNUNET_CONTAINER_multipeermap_create (8, GNUNET_NO);
-
   server_handle = server;
   GNUNET_assert (GNUNET_OK ==
 		 GNUNET_CRYPTO_get_peer_identity (c,
@@ -1514,8 +1476,8 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
   cfg = c;
   GNUNET_SERVER_add_handlers (server, handlers);
   GNUNET_SERVER_disconnect_notify (server, &handle_client_disconnect, NULL);
-
-  GNUNET_SCHEDULER_add_delayed (GNUNET_TIME_UNIT_FOREVER_REL, &shutdown_task,
+  GNUNET_SCHEDULER_add_delayed (GNUNET_TIME_UNIT_FOREVER_REL, 
+				&shutdown_task,
                                 NULL);
   look_for_old_messages ();	
 }

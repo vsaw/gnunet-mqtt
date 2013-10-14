@@ -38,7 +38,7 @@ GNUNET_NETWORK_STRUCT_BEGIN
 struct GNUNET_MQTT_ClientPublishMessage
 {
   /**
-   * Type: GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH
+   * Type: #GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH
    */
   struct GNUNET_MessageHeader header;
 
@@ -64,7 +64,7 @@ struct GNUNET_MQTT_ClientPublishMessage
 struct GNUNET_MQTT_ClientSubscribeMessage
 {
   /**
-   * Type: GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE
+   * Type: #GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE
    */
   struct GNUNET_MessageHeader header;
 
@@ -90,7 +90,7 @@ struct GNUNET_MQTT_ClientSubscribeMessage
 struct GNUNET_MQTT_ClientUnsubscribeMessage
 {
   /**
-   * Type: GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE
+   * Type: #GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE
    */
   struct GNUNET_MessageHeader header;
 
@@ -107,7 +107,7 @@ struct GNUNET_MQTT_ClientUnsubscribeMessage
 struct GNUNET_MQTT_ClientUnsubscribeAckMessage
 {
   /**
-   * Type: GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE_ACK
+   * Type: #GNUNET_MESSAGE_TYPE_MQTT_CLIENT_SUBSCRIBE_ACK
    */
   struct GNUNET_MessageHeader header;
 

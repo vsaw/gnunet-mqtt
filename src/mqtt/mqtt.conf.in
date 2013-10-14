@@ -1,8 +1,16 @@
 [mqtt]
+AUTOSTART = YES
 BINARY = gnunet-service-mqtt
-UNIXPATH = /tmp/gnunet-service-mqtt.sock
-HOME = $SERVICEHOME
+UNIXPATH = $GNUNET_RUNTIME_DIR/gnunet-service-mqtt.sock
 # PORT = 2106
 @UNIXONLY@ PORT = 35345
 SUBSCRIPTION_REANNOUNCE_TIME = 5 m
 MESSAGE_DELETE_TIME = 5 s
+
+UNIX_MATCH_UID = NO
+UNIX_MATCH_GID = YES
+
+
+
+# Where should MQTT cache its messages?
+MESSAGE_FOLDER = $GNUNET_CACHE_HOME/mqtt/
