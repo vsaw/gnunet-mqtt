@@ -7,7 +7,6 @@ Makefile.in
 .m4
 autom4te.cache
 config*
-po
 .deps
 .libs
 ltmain.sh
@@ -19,8 +18,12 @@ m4/libtool.m4
 missing
 stamp-h1
 
-
-
+# stuff generated in the po folder
+boldquot.sed
+gnunet-mqtt.pot
+POTFILES
+remove-potcdate.sed
+stamp-po
 
 # binaries
 gnunet-mqtt-publish
