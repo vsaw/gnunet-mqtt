@@ -28,7 +28,6 @@
 #include <gnunet/gnunet_util_lib.h>
 #include <gnunet/gnunet_testbed_service.h>
 #include <gnunet/gnunet_dht_service.h>
-#include <gnunet/gnunet_regex_lib.h>
 #include "gnunet_mqtt_service.h"
 
 /**
