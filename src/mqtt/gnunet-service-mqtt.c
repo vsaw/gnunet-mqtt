@@ -26,7 +26,7 @@
  */
 #include <gnunet/platform.h>
 #include <gnunet/gnunet_util_lib.h>
-#include <gnunet/gnunet_regex_lib.h>
+#include <gnunet/gnunet_regex_service.h>
 #include <gnunet/gnunet_dht_service.h>
 #include <gnunet/gnunet_mesh_service.h>
 #include <gnunet/gnunet_applications.h>
@@ -831,9 +831,9 @@ search_for_subscribers (const char *topic,
   context->message_delivered = GNUNET_NO;
   context->free_task = GNUNET_SCHEDULER_NO_TASK;
   context->subscribers = GNUNET_CONTAINER_multipeermap_create (1, GNUNET_NO);
-  context->regex_search_handle = GNUNET_REGEX_search (dht_handle, topic,
-                                                      subscribed_peer_found,
-                                                      context, NULL);
+
+  context->regex_search_handle = GNUNET_REGEX_search (cfg, topic,
+                                                      subscribed_peer_found,NULL);
   GNUNET_CONTAINER_DLL_insert (sc_head,
 			       sc_tail,
 			       context);
@@ -925,6 +925,7 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 {
   struct Subscription *subscription;
   char *topic, *regex_topic;
+  struct GNUNET_TIME_Relative refresh_interval;
 
   const struct GNUNET_MQTT_ClientSubscribeMessage *subscribe_msg;
 
@@ -950,9 +951,10 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   GNUNET_CONTAINER_DLL_insert (subscription_head,
 			       subscription_tail,
 			       subscription);
+
+  refresh_interval = GNUNET_TIME_relative_multiply(GNUNET_TIME_UNIT_MINUTES, 1);
   subscription->regex_announce_handle =
-    GNUNET_REGEX_announce (dht_handle, &my_id,
-                           regex_topic,1 , NULL);
+    GNUNET_REGEX_announce (cfg, regex_topic, refresh_interval, NULL);
 
   GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
               "MQTT SUBSCRIBE message received: %s->%s\n",
