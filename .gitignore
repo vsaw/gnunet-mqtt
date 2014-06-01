@@ -35,5 +35,14 @@ gnunet-service-mqtt.o
 libgnunetmqtt.la
 mqtt.conf
 mqtt_api.lo
-
+test_mqtt_multiple_peers
+test_mqtt_multiple_peers.o
+test_mqtt_regex_hash
+test_mqtt_regex_hash.o
+test_mqtt_regex_plus
+test_mqtt_regex_plus.o
+test_mqtt_single_peer
+test_mqtt_single_peer.o
+test_mqtt_unsubscribe
+test_mqtt_unsubscribe.o
 
