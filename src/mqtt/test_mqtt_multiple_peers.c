@@ -31,6 +31,12 @@
 #include "gnunet_mqtt_service.h"
 
 /**
+ * @brief The config file that will be passed to testbed
+ */
+#define CONFIG_FILE "template.conf"
+#define CONFIG_FILE_PARSED CONFIG_FILE ".tmp"
+
+/**
  * Handle to the MQTT
  */
 static struct GNUNET_MQTT_Handle *mqtt_handle_publish, *mqtt_handle_subscribe;
@@ -215,8 +221,9 @@ main (int argc, char **argv)
   int ret;
   result = GNUNET_SYSERR;
   
+  system("perl -p -i -e 's/\\$\\{([^}]+)\\}/defined $ENV{$1} ? $ENV{$1} : $&/eg' < " CONFIG_FILE " > " CONFIG_FILE_PARSED " 2> /dev/null\n");
   ret = GNUNET_TESTBED_test_run("test mqtt multiple peer comumunication", /* test case name */
-			      "template.conf", /* template configuration */
+			       CONFIG_FILE_PARSED, /* template configuration */
 			       2, /* number of peers to start */
 			       0LL, /* Event mask -set to 0 for no event notifications */
 			       NULL, /* Controller event callback */
