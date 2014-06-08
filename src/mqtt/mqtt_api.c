@@ -321,7 +321,7 @@ do_disconnect (struct GNUNET_MQTT_Handle *handle)
     GNUNET_CLIENT_notify_transmit_ready_cancel (handle->th);
     handle->th = NULL;
   }
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "Disconnecting from MQTT service, will try to reconnect in %s\n",
               GNUNET_STRINGS_relative_time_to_string (handle->retry_time,
               GNUNET_YES));
@@ -473,7 +473,7 @@ process_incoming_publish_message (struct GNUNET_MQTT_Handle *handle,
 
   if (NULL == sh)
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Received PUBLISH message matching no subscriptions\n");
     return GNUNET_SYSERR;
   }
@@ -491,7 +491,7 @@ process_incoming_publish_message (struct GNUNET_MQTT_Handle *handle,
           message_len);
   message[message_len - 1] = '\0';
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "Incoming PUBLISH message received (client): %s -> %s\n", topic,
               message);
 
@@ -521,12 +521,12 @@ process_unsubscribe_ack (struct GNUNET_MQTT_Handle *handle,
       break;
 
   if (NULL == sh) {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Received UNSUBSCRIBE_ACK matching no subscriptions\n");
     return GNUNET_SYSERR;
   }
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG, "Subscription with ID %lu cancelled\n",
+  LOG (GNUNET_ERROR_TYPE_DEBUG, "Subscription with ID %lu cancelled\n",
               sh->request_id);
 
   GNUNET_CONTAINER_DLL_remove (handle->subscribe_head, handle->subscribe_tail,
@@ -684,7 +684,7 @@ process_pending_messages (struct GNUNET_MQTT_Handle *handle)
 
   if (NULL == handle->client)
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "process_pending_messages called, but client is NULL, reconnecting\n");
     do_disconnect (handle);
     return;
@@ -705,7 +705,7 @@ process_pending_messages (struct GNUNET_MQTT_Handle *handle)
   if (NULL != handle->th)
     return;
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "notify_transmit_ready returned NULL, reconnecting\n");
   do_disconnect (handle);
 }
