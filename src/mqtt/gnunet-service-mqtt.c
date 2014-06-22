@@ -35,7 +35,7 @@
 #include "mqtt.h"
 #include <regex.h>
 
-
+#define LOG(kind,...) GNUNET_log_from (kind, "mqtt-service",__VA_ARGS__)
 /**
  * Struct representing the context for the regex search
  */
@@ -595,7 +595,7 @@ set_timer_for_deleting_message (struct PendingMessage *pm)
 {
   if (GNUNET_NO == pm->context->message_delivered)
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "scheduling task to delete delivered PUBLISH message\n");
 
     pm->context->message_delivered = GNUNET_YES;
@@ -633,12 +633,12 @@ send_msg_to_subscriber (void *cls,
   size_t msize;
 
   subscriber->transmit_handle = NULL;
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
 	      "Send message to subscriber.\n");
   if (buf == NULL)
   {
     /* subscriber disconnected */
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
 		"Subscriber %s disconnected, pending messages will be discarded\n",
                 GNUNET_i2s (&subscriber->id));
 
@@ -653,7 +653,7 @@ send_msg_to_subscriber (void *cls,
     GNUNET_CONTAINER_DLL_remove (subscriber->pending_head,
                                  subscriber->pending_tail, pm);
     memcpy (&cbuf[off], pm->msg, msize);
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Transmitting %u bytes to subscriber %s\n", msize,
                 GNUNET_i2s (&subscriber->id));
     off += msize;
@@ -662,7 +662,7 @@ send_msg_to_subscriber (void *cls,
     GNUNET_free (pm);
   }
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "Transmitted %zu/%zu bytes to subscriber %s\n",
               off, size, GNUNET_i2s (&subscriber->id));
   process_pending_subscriber_messages (subscriber);
@@ -685,7 +685,7 @@ process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber)
   if ((subscriber->pending_head == NULL) ||
       (subscriber->transmit_handle != NULL))
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Not asking for transmission to %s now: %s\n",
                 GNUNET_i2s (&subscriber->id),
                 subscriber->pending_head ==
@@ -694,13 +694,13 @@ process_pending_subscriber_messages (struct RemoteSubscriberInfo *subscriber)
   }
 
   msg = subscriber->pending_head->msg;
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "asking for transmission of %u bytes to client %s\n",
               ntohs (msg->size), GNUNET_i2s (&subscriber->id));
 
   subscriber->transmit_handle =
     GNUNET_MESH_notify_transmit_ready (subscriber->channel,
-				       GNUNET_NO,
+				       	   	   	   	   GNUNET_NO,
                                        GNUNET_TIME_UNIT_FOREVER_REL,
                                        ntohs (msg->size),
                                        send_msg_to_subscriber, subscriber);
@@ -726,7 +726,6 @@ static void
 deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg,
 			  struct RegexSearchContext *context);
 
-
 /**
  * Search callback function called when a subscribed peer is found.
  *
@@ -750,8 +749,8 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
   struct RegexSearchContext *context = cls;
   size_t msg_len = ntohs (context->publish_msg->header.size);
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "an active subscription found from %s\n",
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+              "--------> Found an active subscription from %s\n",
 	      GNUNET_i2s (id));
 
   /*
@@ -770,7 +769,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
 
   if (0 == memcmp (id, &my_id, sizeof (struct GNUNET_PeerIdentity)))
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG(GNUNET_ERROR_TYPE_DEBUG,
                 "fast tracking PUBLISH message to local subscribers\n");
 
     deliver_incoming_publish (context->publish_msg, context);
@@ -786,7 +785,7 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
 
   if (NULL == subscriber)
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "creating a new channel to %s\n", GNUNET_i2s(id));
 
     subscriber = GNUNET_new (struct RemoteSubscriberInfo);
@@ -825,6 +824,8 @@ search_for_subscribers (const char *topic,
 {
   struct RegexSearchContext *context;
 
+  LOG(GNUNET_ERROR_TYPE_DEBUG, "Searching for subscribers on topic %s\n",topic);
+
   context = GNUNET_new (struct RegexSearchContext);
   context->publish_msg = publish_msg;
   context->file_path = file_path;
@@ -833,7 +834,7 @@ search_for_subscribers (const char *topic,
   context->subscribers = GNUNET_CONTAINER_multipeermap_create (1, GNUNET_NO);
 
   context->regex_search_handle = GNUNET_REGEX_search (cfg, topic,
-                                                      subscribed_peer_found,NULL);
+                                                      &subscribed_peer_found,context);
   GNUNET_CONTAINER_DLL_insert (sc_head,
 			       sc_tail,
 			       context);
@@ -903,7 +904,7 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 			      "open",
 			      file_path);
   }
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
               topic,
 	      publish_msg->topic_len,
@@ -929,6 +930,7 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 
   const struct GNUNET_MQTT_ClientSubscribeMessage *subscribe_msg;
 
+
   /* Extract topic */
   subscribe_msg = (const struct GNUNET_MQTT_ClientSubscribeMessage *) msg;
   topic = GNUNET_malloc (subscribe_msg->topic_len);
@@ -941,7 +943,8 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 		    regex_topic,
 		    REG_NOSUB))
   {
-    GNUNET_break (0);
+  	LOG(GNUNET_ERROR_TYPE_WARNING,"Error building Regex from tapic String\n");
+  	GNUNET_break (0);
     GNUNET_free (subscription);
     GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
     return;
@@ -956,8 +959,8 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   subscription->regex_announce_handle =
     GNUNET_REGEX_announce (cfg, regex_topic, refresh_interval, NULL);
 
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
-              "MQTT SUBSCRIBE message received: %s->%s\n",
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+              "MQTT SUBSCRIBE message received: %s -> %s\n",
 	      topic,
 	      regex_topic);
   GNUNET_SERVER_receive_done (client, GNUNET_OK);
@@ -993,7 +996,7 @@ send_reply_to_client (void *cls, size_t size, void *buf)
   if (buf == NULL)
   {
     /* client disconnected */
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG(GNUNET_ERROR_TYPE_DEBUG,
                 "Client %p disconnected, pending messages will be discarded\n",
                 client->client_handle);
     return 0;
@@ -1011,13 +1014,13 @@ send_reply_to_client (void *cls, size_t size, void *buf)
     }
     GNUNET_free (reply->msg);
     GNUNET_free (reply);
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Transmitting %u bytes to client %p\n",
 		msize,
                 client->client_handle);
     off += msize;
   }
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
 	      "Transmitted %u/%u bytes to client %p\n",
               (unsigned int) off,
 	      (unsigned int) size,
@@ -1038,14 +1041,14 @@ process_pending_client_messages (struct ClientInfo *client)
 {
   if ((client->pending_head == NULL) || (client->transmit_handle != NULL))
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+    LOG (GNUNET_ERROR_TYPE_DEBUG,
                 "Not asking for transmission to %p now: %s\n",
                 client->client_handle,
                 client->pending_head ==
                 NULL ? "no more messages" : "request already pending");
     return;
   }
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
               "Asking for transmission of %u bytes to client %p\n",
               ntohs (client->pending_head->msg->size),
 	      client->client_handle);
@@ -1105,12 +1108,12 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
 
   if (NULL == subscription)
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
+    LOG (GNUNET_ERROR_TYPE_ERROR,
                 "Active subscription with ID %lu does not exist\n",
                 subscription->request_id);
     return;
   }
-  GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
 	      "Cancelling subscription with ID %lu\n",
               subscription->request_id);
 
@@ -1148,6 +1151,8 @@ deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg,
   struct Subscription *subscription;
   size_t msg_len = ntohs (msg->header.size);
   int free_publish_msg = GNUNET_YES;
+
+  LOG(GNUNET_ERROR_TYPE_DEBUG,"Delivering incoming publish message to incoming client\n");
 
   /* Extract topic */
   publish_msg = GNUNET_malloc (msg_len);
@@ -1242,6 +1247,8 @@ handle_client_disconnect (void *cls,
   struct Subscription *subscription;
   struct Subscription *nxt;
   struct ClientInfo *client_info = NULL;
+
+  LOG(GNUNET_ERROR_TYPE_DEBUG,"Client disconnected, cleaning up.\n");
 
   if (NULL == client)
     return;
@@ -1457,7 +1464,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
                                            "MESSAGE_DELETE_TIME",
                                            &message_delete_time))
   {
-    GNUNET_log (GNUNET_ERROR_TYPE_ERROR,
+    LOG (GNUNET_ERROR_TYPE_ERROR,
                 _("%s service is lacking key configuration settings (%s). "
                   "Exiting.\n"),
                 "mqtt", "message delete time");
@@ -1496,6 +1503,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
 int
 main (int argc, char *const *argv)
 {
+
   return (GNUNET_OK ==
           GNUNET_SERVICE_run (argc, argv, "mqtt", GNUNET_SERVICE_OPTION_NONE,
                               &run, NULL)) ? 0 : 1;
