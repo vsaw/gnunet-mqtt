@@ -51,3 +51,12 @@ test_mqtt_unsubscribe.o
 .cproject
 .settings
 res/*
+
+# Logs
+*.log
+
+# Temporary template files
+*.conf.tmp
+
+# local shell scripts
+*.sh
