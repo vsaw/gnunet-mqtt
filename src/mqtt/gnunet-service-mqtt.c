@@ -315,7 +315,7 @@ static struct GNUNET_TIME_Relative message_delete_time;
 /**
  * String constant for prefixing the topic
  */
-static const char *prefix = "GNUNET-MQTT 0001 00000";
+static const char *prefix = "GNUNET-MQTT 0001 00000 ";
 
 /**
  * String constant for replacing '+' wildcard in the subscribed topics.
@@ -943,7 +943,7 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   get_regex (topic, &regex_topic);
   if (0 != regcomp (&subscription->automaton,
 		    regex_topic,
-		    REG_NOSUB))
+		    REG_NOSUB | REG_EXTENDED))
   {
     LOG (GNUNET_ERROR_TYPE_WARNING,"Error building Regex from tapic String\n");
   	GNUNET_break (0);
@@ -1141,7 +1141,7 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
 /**
  * Deliver incoming PUBLISH messages to local subscribers.
  *
- * This functioe processes and forwards PUBLISH messages to the
+ * This function processes and forwards PUBLISH messages to the
  * appropriate subscribing application.
  */
 static void
