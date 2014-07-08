@@ -54,6 +54,11 @@ static int verbose;
  */
 static int ret;
 
+/**
+ * Handle to the subscription
+ */
+static struct GNUNET_MQTT_SubscribeHandle *sub_handle;
+
 
 /**
  * Disconnect from MQTT and free all allocated resources.
@@ -64,11 +69,18 @@ static int ret;
 static void
 shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
 {
-  if (NULL != mqtt_handle)
+	if (NULL != sub_handle)
+	{
+		GNUNET_MQTT_unsubscribe(sub_handle);
+		sub_handle = NULL;
+	}
+	if (NULL != mqtt_handle)
   {
-    GNUNET_MQTT_disconnect (mqtt_handle);
+  	GNUNET_MQTT_disconnect (mqtt_handle);
     mqtt_handle = NULL;
   }
+
+	FPRINTF (stdout, "Unsubscribed from topic `%s' and disconnected from MQTT service\n", topic);
 }
 
 
@@ -145,7 +157,7 @@ run (void *cls, char *const *args, const char *cfgfile,
   timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
                                            request_timeout);
 
-  GNUNET_MQTT_subscribe (mqtt_handle, strlen(topic) + 1, topic, timeout,
+  sub_handle = GNUNET_MQTT_subscribe (mqtt_handle, strlen(topic) + 1, topic, timeout,
                          subscribe_continuation, NULL,
                          subscribe_result_callback, NULL);
 

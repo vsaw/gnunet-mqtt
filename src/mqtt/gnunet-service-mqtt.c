@@ -35,7 +35,7 @@
 #include "mqtt.h"
 #include <regex.h>
 
-#define LOG(kind,...) GNUNET_log_from (kind, "mqtt-service",__VA_ARGS__)
+#define LOG(kind,...) GNUNET_log_from (kind, "mqtt",__VA_ARGS__)
 /**
  * Struct representing the context for the regex search
  */
@@ -1104,7 +1104,7 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
     {
       GNUNET_CONTAINER_DLL_remove (subscription_head,
 				   subscription_tail,
-				   subscription);;
+				   subscription);
       break;
     }
   }
@@ -1364,6 +1364,7 @@ look_for_old_messages ()
 			       "MQTT", "MESSAGE_FOLDER");
     return;
   }
+
   if (NULL == (dir = opendir (folder_name)))
   {
     GNUNET_DISK_directory_create (folder_name);
