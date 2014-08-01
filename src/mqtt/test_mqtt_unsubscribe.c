@@ -41,16 +41,22 @@
  */
 static struct GNUNET_MQTT_Handle *mqtt_handle;
 
+static struct GNUNET_MQTT_SubscribeHandle *subscribe_handle;
+
 static struct GNUNET_TESTBED_Operation *basic_mqtt_op;
 
 static GNUNET_SCHEDULER_TaskIdentifier shutdown_tid;
 
 static int result;
 
+static int received_message_count = 0;
+
+static int test_started = GNUNET_NO;
+
 /**
  * User supplied timeout value
  */
-static unsigned long long request_timeout = 5;
+static unsigned long long request_timeout = 1;
 
 
 static void
@@ -69,17 +75,69 @@ shutdown_task (void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc)
 
 
 static void
-subscribe_result_callback (void *cls, uint8_t topic_len, char *topic,
+subscribe_result_callback (void *cls, uint8_t topic_len, char *message_topic,
                            size_t size, void *data)
 {
-  result = GNUNET_SYSERR;
-  FPRINTF (stdout, 
-	   "%s: %s -> %s\n", 
-	   _("\nMessage received"),
-	   topic,
-           (char*) data);
-  GNUNET_free (topic);
+
+	if(received_message_count != 0) {
+		result = GNUNET_SYSERR;
+	}
+	if(test_started == GNUNET_YES)
+	{
+		received_message_count = received_message_count + 1;
+		FPRINTF (stdout,
+			   "\n%d. %s: %s -> %s\n",
+			   received_message_count,
+			   _("Message received"),
+			   message_topic,
+		           (char*) data);
+	}
+	else
+	{
+		FPRINTF (stdout,
+					   "\n%s: %s -> %s\n",
+					   _("OLD Message received"),
+					   message_topic,
+				           (char*) data);
+	}
+
+
+  GNUNET_free (message_topic);
   GNUNET_free (data);
+}
+
+const char *topic = "some/topic";
+const char *message = "test message";
+
+static void
+unsubscribe(void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc) {
+	struct GNUNET_MQTT_SubscribeHandle *subscribe_handle = (struct GNUNET_MQTT_SubscribeHandle *) cls;
+
+	struct GNUNET_TIME_Relative timeout;
+	timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
+	                                           request_timeout);
+	GNUNET_MQTT_unsubscribe(subscribe_handle);
+	GNUNET_MQTT_publish (mqtt_handle, strlen(topic) + 1, topic,
+	                       strlen(message) + 1, message, timeout, NULL,
+	                       NULL);
+	FPRINTF (stdout,
+	  	   "Unsubscribed to topic %s and sent publish, should not receive messages anymore\n", topic);
+	GNUNET_SCHEDULER_add_delayed(GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS, 5), &shutdown_task, NULL);
+}
+
+static void
+publish(void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc) {
+	struct GNUNET_TIME_Relative timeout;
+	timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
+	                                           request_timeout);
+	FPRINTF (stdout,
+			  	   "%s\n", "Starting test, publishing 1 message, should only receive 1");
+	test_started = GNUNET_YES;
+
+	GNUNET_MQTT_publish (mqtt_handle, strlen(topic) + 1, topic,
+	                         strlen(message) + 1, message, timeout, NULL,
+	                         NULL);
+	GNUNET_SCHEDULER_add_delayed(GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS, 5), &unsubscribe, cls);
 }
 
 
@@ -88,22 +146,18 @@ service_connect_comp (void *cls, struct GNUNET_TESTBED_Operation *op,
 		      void *ca_result,
 		      const char *emsg)
 {	
-  struct GNUNET_TIME_Relative timeout;
-  struct GNUNET_MQTT_SubscribeHandle *sh;
-  const char *topic = "some/topic";
-  const char *message = "test message";
-  
-  timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
-                                           request_timeout);
-  sh = GNUNET_MQTT_subscribe (mqtt_handle, strlen(topic) + 1, topic, timeout,
+	struct GNUNET_TIME_Relative timeout;
+		timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
+		                                           request_timeout);
+	subscribe_handle = GNUNET_MQTT_subscribe (mqtt_handle, strlen(topic) + 1, topic, timeout,
                          NULL, NULL,
                          subscribe_result_callback, NULL);
-  GNUNET_MQTT_unsubscribe(sh);
-  GNUNET_MQTT_publish (mqtt_handle, strlen(topic) + 1, topic,
-                       strlen(message) + 1, message, timeout, NULL,
-                       NULL);
+
+  FPRINTF (stdout,
+  	   "Subscribed to topic %s waiting 5 secs for possible old messages to come in\n", topic);
+  GNUNET_SCHEDULER_add_delayed(GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS, 5), &publish, subscribe_handle);
+
   result = GNUNET_OK;				   
-  GNUNET_SCHEDULER_add_delayed(GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS, 10), &shutdown_task, NULL);
 }
 
 

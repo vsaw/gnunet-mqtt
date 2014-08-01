@@ -823,14 +823,15 @@ search_for_subscribers (const char *topic,
                         struct GNUNET_MQTT_ClientPublishMessage *publish_msg,
                         char *file_path)
 {
-  struct RegexSearchContext *context;
-
-  LOG (GNUNET_ERROR_TYPE_DEBUG, "Searching for subscribers on topic %s\n",
-       topic);
+	struct RegexSearchContext *context;
+	LOG (GNUNET_ERROR_TYPE_DEBUG, "Searching for subscribers on topic %s\n",
+	         topic);
 
   context = GNUNET_new (struct RegexSearchContext);
   context->publish_msg = publish_msg;
-  context->file_path = file_path;
+  // make a copy of the file path, as it might be freed by the caller
+  context->file_path = (char*) malloc (strlen (file_path)+1);;
+  strcpy(context->file_path, file_path);
   context->message_delivered = GNUNET_NO;
   context->free_task = GNUNET_SCHEDULER_NO_TASK;
   context->subscribers = GNUNET_CONTAINER_multipeermap_create (1, GNUNET_NO);
@@ -994,6 +995,8 @@ send_reply_to_client (void *cls, size_t size, void *buf)
   struct PendingMessage *reply;
   size_t off;
   size_t msize;
+
+  LOG(GNUNET_ERROR_TYPE_DEBUG, "Sending reply to client\n");
 
   client->transmit_handle = NULL;
   if (buf == NULL)
@@ -1289,6 +1292,7 @@ shutdown_task (void *cls,
 {
   struct Subscription *subscription;
   struct RegexSearchContext *context;
+  LOG(GNUNET_ERROR_TYPE_DEBUG, "Shutting down\n");
 
   while (NULL != (subscription = subscription_head))
   {
@@ -1427,6 +1431,7 @@ look_for_old_messages ()
 
     add_prefix (topic, &prefixed_topic);
 
+    LOG(GNUNET_ERROR_TYPE_DEBUG, "Looking to deliver old message from path %s\n", file_path);
     search_for_subscribers (prefixed_topic, old_publish_msg, file_path);
     GNUNET_free (file_path);
     GNUNET_free (topic);
