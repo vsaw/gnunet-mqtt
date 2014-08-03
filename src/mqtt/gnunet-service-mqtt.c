@@ -83,7 +83,7 @@ struct RegexSearchContext
   /**
    * Pointer to the regex search handle
    */
-  struct GNUNET_REGEX_search_handle *regex_search_handle;
+  struct GNUNET_REGEX_Search *regex_search_handle;
 };
 
 
@@ -218,7 +218,7 @@ struct Subscription
   /**
    * Handle used to cancel the annnouncement
    */
-  struct GNUNET_REGEX_announce_handle *regex_announce_handle;
+  struct GNUNET_REGEX_Announcement *regex_announce_handle;
 
   /**
    * The subscribed client
@@ -268,7 +268,7 @@ static struct GNUNET_PeerIdentity my_id;
 static struct Subscription *subscription_head;
 
 /**
- * Head of active subscriptions.
+ * Tail of active subscriptions.
  */
 static struct Subscription *subscription_tail;
 
@@ -805,6 +805,9 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
       subscriber, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
   }
 
+  LOG(GNUNET_ERROR_TYPE_DEBUG, "Maintaining %d remote subscribers\n",
+  			GNUNET_CONTAINER_multipeermap_size(remote_subscribers));
+
   add_pending_subscriber_message (subscriber, pm);
   subscriber->peer_added = GNUNET_YES;
   subscriber->peer_connecting = GNUNET_NO;
@@ -830,7 +833,7 @@ search_for_subscribers (const char *topic,
   context = GNUNET_new (struct RegexSearchContext);
   context->publish_msg = publish_msg;
   // make a copy of the file path, as it might be freed by the caller
-  context->file_path = (char*) malloc (strlen (file_path)+1);;
+  context->file_path = (char*) GNUNET_malloc (strlen (file_path)+1);;
   strcpy(context->file_path, file_path);
   context->message_delivered = GNUNET_NO;
   context->free_task = GNUNET_SCHEDULER_NO_TASK;
@@ -942,26 +945,28 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
   topic[subscribe_msg->topic_len - 1] = '\0';
   subscription = GNUNET_new (struct Subscription);
   get_regex (topic, &regex_topic);
+
   if (0 != regcomp (&subscription->automaton,
 		    regex_topic,
-		    REG_NOSUB | REG_EXTENDED))
+		    REG_EXTENDED))
   {
-    LOG (GNUNET_ERROR_TYPE_WARNING,"Error building Regex from tapic String\n");
+    LOG (GNUNET_ERROR_TYPE_WARNING,"Error building Regex from topic String\n");
   	GNUNET_break (0);
     GNUNET_free (subscription);
     GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
     return;
   }
+
   subscription->request_id = subscribe_msg->request_id;
   subscription->client = find_active_client (client);
-  GNUNET_CONTAINER_DLL_insert (subscription_head,
-			       subscription_tail,
-			       subscription);
+	GNUNET_CONTAINER_DLL_insert(subscription_head,
+															subscription_tail,
+															subscription);
 
   refresh_interval = GNUNET_TIME_relative_multiply (
       GNUNET_TIME_UNIT_MINUTES, 1);
-  subscription->regex_announce_handle =
-    GNUNET_REGEX_announce (cfg, regex_topic, refresh_interval, NULL);
+	subscription->regex_announce_handle =
+			GNUNET_REGEX_announce(cfg, regex_topic,refresh_interval,NULL);
 
   LOG (GNUNET_ERROR_TYPE_DEBUG,
        "MQTT SUBSCRIBE message received: %s -> %s\n",
@@ -1140,6 +1145,35 @@ handle_mqtt_unsubscribe (void *cls, struct GNUNET_SERVER_Client *client,
   GNUNET_SERVER_receive_done (client, GNUNET_OK);
 }
 
+/**
+ * Match a topic string against a subscription using regexec.
+ * Also checks if the regex match goes all the way to the end of the topic string,
+ * to ensure an exact match. If a client has multiple subscriptions this is necessary
+ * to allow proper message demultiplexing.
+ *
+ * @param subscription the subscription which regex should be checked
+ * @param prefixed_topic the topic string that was sent with a message, prefixed with the mqtt regex prefix string
+ * @return 0 in case of a match, non-zero value otherwise
+ */
+static int
+match_subcriber_regex(struct Subscription *subscription, const char *prefixed_topic)
+{
+	LOG(GNUNET_ERROR_TYPE_DEBUG, "Matching regex against:\n%s\n", prefixed_topic);
+	size_t nmatch = 1;
+	regmatch_t pmatch;
+	int ret = regexec(&subscription->automaton, prefixed_topic, nmatch, &pmatch, 0);
+
+	LOG(GNUNET_ERROR_TYPE_DEBUG,
+				"Regexec topic match result: (ret, end_pos, strlen) = (%d, %d, %d)\n",
+				ret, pmatch.rm_eo,
+				strlen(prefixed_topic));
+
+	if(ret == 0)
+		return (((size_t) pmatch.rm_eo) == strlen(prefixed_topic)) ? 0: -1;
+	else
+		return ret;
+}
+
 
 /**
  * Deliver incoming PUBLISH messages to local subscribers.
@@ -1174,33 +1208,36 @@ deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg,
 
   for (subscription = subscription_head; NULL != subscription; subscription = subscription->next)
   {
-    if (0 == regexec (&subscription->automaton, prefixed_topic, 0, NULL, 0))
-    {
-      struct PendingMessage *pm;
-      struct GNUNET_MQTT_ClientPublishMessage *return_msg;
-      struct ClientInfo *client_info = subscription->client;
+		if (0 == match_subcriber_regex(subscription, prefixed_topic))
+		{
+			LOG(GNUNET_ERROR_TYPE_DEBUG, "========> MATCH\n");
+			struct PendingMessage *pm;
+			struct GNUNET_MQTT_ClientPublishMessage *return_msg;
+			struct ClientInfo *client_info = subscription->client;
 
-      if (GNUNET_YES == free_publish_msg)
-      {
-        return_msg = publish_msg;
-        free_publish_msg = GNUNET_NO;
-      }
-      else
-      {
-        return_msg = GNUNET_malloc (msg_len);
-        memcpy (return_msg, msg, msg_len);
-      }
-      return_msg->request_id = subscription->request_id;
-      pm = GNUNET_new (struct PendingMessage);
-      pm->msg = (struct GNUNET_MessageHeader*) return_msg;
-      pm->context = context;
-      add_pending_client_message (client_info, pm);
-    }
-  }
-  GNUNET_free (topic);
-  GNUNET_free (prefixed_topic);
-  if (GNUNET_YES == free_publish_msg)
-    GNUNET_free (publish_msg);
+			if (GNUNET_YES == free_publish_msg)
+			{
+				return_msg = publish_msg;
+				free_publish_msg = GNUNET_NO;
+			}
+			else
+			{
+				return_msg = GNUNET_malloc(msg_len);
+				memcpy(return_msg, msg, msg_len);
+			}
+			return_msg->request_id = subscription->request_id;
+			LOG(GNUNET_ERROR_TYPE_DEBUG, "Serving Subscription %d\n",
+					subscription->request_id);
+			pm = GNUNET_new(struct PendingMessage);
+			pm->msg = (struct GNUNET_MessageHeader*) return_msg;
+			pm->context = context;
+			add_pending_client_message(client_info, pm);
+		}
+	}
+	GNUNET_free(topic);
+	GNUNET_free(prefixed_topic);
+	if (GNUNET_YES == free_publish_msg)
+		GNUNET_free(publish_msg);
 }
 
 

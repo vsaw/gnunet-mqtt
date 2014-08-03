@@ -79,7 +79,7 @@ struct GNUNET_MQTT_ClientSubscribeMessage
    */
   uint8_t topic_len;
 
-  /* Topic (NUL-terminated string) and data copied to end of this message */
+  /* NUL-terminated topic string copied to end of this message */
 
 };
 
