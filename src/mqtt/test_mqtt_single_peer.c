@@ -105,7 +105,7 @@ service_connect_comp (void *cls, struct GNUNET_TESTBED_Operation *op,
 		      const char *emsg)
 {	
   struct GNUNET_TIME_Relative timeout;
-  const char *topic = "some/topic";
+  const char *topic = "some2/topic";
   const char *message = "test message";
   
   timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,

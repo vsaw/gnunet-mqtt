@@ -147,7 +147,7 @@ service_connect_comp_pub (void *cls,
 			      const char *emsg)
 {	
 	struct GNUNET_TIME_Relative timeout;
-	const char *topic_1 = "some/topic";
+	const char *topic_1 = "some1/topic";
 	const char *message_1 = "message on topic 1";
 
 	timeout = GNUNET_TIME_relative_multiply(GNUNET_TIME_UNIT_SECONDS,
@@ -157,7 +157,7 @@ service_connect_comp_pub (void *cls,
 											NULL,
 											NULL);
 
-	const char *topic_2 = "some/topic/deeper";
+	const char *topic_2 = "some1/topic/deeper";
 	const char *message_2 = "message on topic 2";
 
 	GNUNET_MQTT_publish(mqtt_handle_pub, strlen(topic_2) + 1, topic_2,
@@ -165,7 +165,7 @@ service_connect_comp_pub (void *cls,
 											NULL,
 											NULL);
 
-	const char *topic_3 = "some/other";
+	const char *topic_3 = "some1/other";
 	const char *message_3 = "message on topic 3";
 
 	GNUNET_MQTT_publish(mqtt_handle_pub, strlen(topic_3) + 1, topic_3,
@@ -182,7 +182,7 @@ service_connect_comp_sub (void *cls,
 				const char *emsg)
 {	
   struct GNUNET_TIME_Relative timeout;
-  const char *topic = "some/#";
+  const char *topic = "some1/#";
 
   timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
                                            request_timeout);
@@ -191,13 +191,13 @@ service_connect_comp_sub (void *cls,
                          NULL, NULL,
                          result_callback_sub_1, topic);
 
-  const char *topic_2 = "some/topic";
+  const char *topic_2 = "some1/topic";
 
   GNUNET_MQTT_subscribe (mqtt_handle_sub, strlen(topic_2) + 1, topic_2, timeout,
                            NULL, NULL,
                            result_callback_sub_2, topic_2);
 
-  const char *topic_3 = "some/+";
+  const char *topic_3 = "some1/+";
 
   GNUNET_MQTT_subscribe (mqtt_handle_sub, strlen(topic_3) + 1, topic_3, timeout,
                              NULL, NULL,
