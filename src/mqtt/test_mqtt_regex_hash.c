@@ -118,7 +118,7 @@ service_connect_comp_publish (void *cls,
 			      const char *emsg)
 {	
   struct GNUNET_TIME_Relative timeout;
-  const char *topic = "some/topic/level1/Level2";
+  const char *topic = "some5/topic/level1/Level2";
   const char *message = "test message";
   
   timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
@@ -136,7 +136,7 @@ service_connect_comp_subscribe (void *cls,
 				const char *emsg)
 {	
   struct GNUNET_TIME_Relative timeout;
-  const char *topic = "some/topic/#";
+  const char *topic = "some5/topic/#";
 		
   timeout = GNUNET_TIME_relative_multiply (GNUNET_TIME_UNIT_SECONDS,
                                            request_timeout);

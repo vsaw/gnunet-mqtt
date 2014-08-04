@@ -71,7 +71,7 @@ gnunet_mqtt_subscribe_DEPENDENCIES = \
   libgnunetmqtt.la
 
 check_PROGRAMS = \
-  test_mqtt_single_peer test_mqtt_multiple_peers test_mqtt_unsubscribe test_mqtt_regex_hash test_mqtt_regex_plus
+  test_mqtt_multiple_peers_regex test_mqtt_single_peer test_mqtt_multiple_peers test_mqtt_unsubscribe test_mqtt_regex_hash test_mqtt_regex_plus
 
 TESTS = $(check_PROGRAMS)
 
@@ -113,6 +113,14 @@ test_mqtt_regex_plus_LDADD = \
   $(top_builddir)/src/mqtt/libgnunetmqtt.la \
   -lgnunetutil -lgnunettestbed
 test_mqtt_regex_plus_LDFLAGS = \
+  $(GNUNET_LDFLAGS)  $(WINFLAGS) -export-dynamic
+
+test_mqtt_multiple_peers_regex_SOURCES = \
+ test_mqtt_multiple_peers_regex.c
+test_mqtt_multiple_peers_regex_LDADD = \
+  $(top_builddir)/src/mqtt/libgnunetmqtt.la \
+  -lgnunetutil -lgnunettestbed
+test_mqtt_multiple_peers_regex_LDFLAGS = \
   $(GNUNET_LDFLAGS)  $(WINFLAGS) -export-dynamic
  
 pkgcfg_DATA = mqtt.conf

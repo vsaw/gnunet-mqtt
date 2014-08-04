@@ -54,6 +54,16 @@ static int received_message_count = 0;
 static int test_started = GNUNET_NO;
 
 /**
+ * the topic used in the test
+ */
+static const char *topic = "some4/topic";
+
+/**
+ * the message that is sent to check if the sub/unsub worked
+ */
+static const char *message = "test message";
+
+/**
  * User supplied timeout value
  */
 static unsigned long long request_timeout = 1;
@@ -105,9 +115,6 @@ subscribe_result_callback (void *cls, uint8_t topic_len, char *message_topic,
   GNUNET_free (message_topic);
   GNUNET_free (data);
 }
-
-const char *topic = "some/topic";
-const char *message = "test message";
 
 static void
 unsubscribe(void *cls, const struct GNUNET_SCHEDULER_TaskContext *tc) {

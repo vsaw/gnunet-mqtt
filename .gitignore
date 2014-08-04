@@ -45,6 +45,8 @@ test_mqtt_single_peer
 test_mqtt_single_peer.o
 test_mqtt_unsubscribe
 test_mqtt_unsubscribe.o
+test_mqtt_multiple_peers_regex
+test_mqtt_multiple_peers_regex.o
 
 # Eclipse stuff
 .project
