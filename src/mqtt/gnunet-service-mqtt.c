@@ -31,6 +31,7 @@
 #include <gnunet/gnunet_mesh_service.h>
 #include <gnunet/gnunet_applications.h>
 #include <gnunet/gnunet_configuration_lib.h>
+#include <gnunet_multicast_service.h>
 #include "gnunet_protocols_mqtt.h"
 #include "mqtt.h"
 #include <regex.h>
@@ -268,6 +269,64 @@ struct Subscription
   struct DhtMonitorList *dht_monitor_list_tail;
 };
 
+/**
+ * Struct describing a multicast channel, it's matching topic subscription
+ * accept states keys, which are covered so far.
+ */
+struct MulticastChannel {
+	/**
+	 * Expiration of the dht channel announcement
+	 */
+	struct GNUNET_TIME_Absolute expiration;
+	/**
+	 * Private key used to create the channel
+	 */
+	struct GNUNET_CRYPTO_EddsaPrivateKey *channel_private_key;
+	/**
+	 * Element in a DLL.
+	 */
+	struct MulticastChannel *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct MulticastChannel *next;
+	/**
+	 * Multicast Channel handle
+	 */
+	struct GNUNET_MULTICAST_Origin *channel;
+	/**
+	 * topic that the channel is broadcasting about
+	 */
+	const char *channel_topic;
+	/**
+	 * DLL head of accept states that are served by this Channel
+	 */
+	struct AcceptState *as_head;
+	/**
+	 * DLL tail of accept states that are served by this Channel
+	 */
+	struct AcceptState *accepts_states_tail;
+};
+
+/**
+ * DHT keys of regex accept states
+ */
+struct AcceptState
+{
+	/**
+	 * Element in a DLL.
+	 */
+	struct AcceptState *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct AcceptState *next;
+	/**
+	 * DHT key of the accept state
+	 */
+	struct GNUNET_HashCode *hash;
+};
+
 
 /**
  * Our configuration.
@@ -359,6 +418,15 @@ static const char *plus_regex = "(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|
  */
 static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+)*";
 
+/**
+ * Head of DLL of all multicast channels maintained by this service (publisher)
+ */
+static struct MulticastChannel* multicast_channels_head;
+
+/**
+ * Tail of DLL of all multicast channels maintained by this service (publisher)
+ */
+static struct MulticastChannel* multicast_channels_tail;
 
 /**
  * Returns a string containing the hexadecimal representation of mem
@@ -809,15 +877,132 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
                        const struct GNUNET_PeerIdentity *put_path,
                        unsigned int put_path_length)
 {
-  struct PendingMessage *pm;
-  struct RemoteSubscriberInfo *subscriber;
-  struct GNUNET_MessageHeader *msg;
-  struct RegexSearchContext *context = cls;
-  size_t msg_len = ntohs (context->publish_msg->header.size);
+	struct PendingMessage *pm;
+	struct RemoteSubscriberInfo *subscriber;
+	struct GNUNET_MessageHeader *msg;
+	struct RegexSearchContext *context = cls;
+	size_t msg_len = ntohs(context->publish_msg->header.size);
 
-  LOG (GNUNET_ERROR_TYPE_DEBUG,
-       "--------> Found an active subscription from %s\n",
-	     GNUNET_i2s (id));
+	/** multicast stuff **/
+	// hash of dht_key_af_acceptt_state
+	struct GNUNET_HashCode *announce_key;
+	// private key of channel
+	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
+	struct GNUNET_CRYPTO_EddsaPrivateKey *public_channel_key;
+	struct GNUNET_HashCode * dht_key_of_accept_state;
+	/**
+	 * Start new multicast group for the peer
+	 */
+	struct MulticastChannel* channel = NULL;
+	/**
+	 * accept state loop variable
+	 */
+	struct AcceptState *as_iter;
+	/**
+	 * boolean that states if we need to announce a new channel
+	 */
+	int announce = GNUNET_NO;
+	// TODO extract real topic
+	char *topic = "MOCK";
+	// TODO get real dht key
+	dht_key_of_accept_state = "a";
+
+
+	LOG(GNUNET_ERROR_TYPE_DEBUG,
+			"--------> Found an active subscription from %s\n",
+			GNUNET_i2s(id));
+
+	for (channel = multicast_channels_head;
+			NULL != channel && announce == GNUNET_NO; channel = channel->next) {
+
+		if (strncmp(channel->channel_topic, topic, strlen(topic)) != 0)
+			continue; // the topic does not match, check next existing channel
+
+		// check if this channel serves the found accept state
+		for (as_iter = channel->as_head; NULL != as_iter; as_iter = as_iter->next) {
+
+			if (dht_key_of_accept_state->bits != as_iter->hash->bits) {
+				// channel exists, but not announced for this accept state yet
+				announce = GNUNET_YES;
+				break;
+			}
+			else {
+				// channel for this dht accept state
+				if (GNUNET_TIME_absolute_get_remaining(channel->expiration) > 0) {
+					return; // active announcement in the DHT already
+				}
+				else {
+					// need to re-announce the channel
+					announce = GNUNET_YES;
+					break;
+				}
+			}
+		}
+	}
+
+	if (channel == NULL) { // no matching channel, create a new one
+
+		// create a new private key for the channel
+		if (NULL == (private_channel_key = GNUNET_CRYPTO_eddsa_key_create())) {
+			LOG(GNUNET_ERROR_TYPE_ERROR,
+					"Could not retrieve public key for private eddsa key %s, aborting\n",
+					private_channel_key->d);
+			return;
+		}
+
+		// create the channel
+		channel = GNUNET_new(struct MulticastChannel);
+		channel->channel_private_key = private_channel_key;
+		channel->channel_topic = topic;
+		channel->expiration =
+				GNUNET_TIME_relative_to_absolute(GNUNET_TIME_relative_multiply( GNUNET_TIME_UNIT_HOURS,
+																																				12));
+
+		// add accept state to maintained channel
+		struct AcceptState *accept_state = GNUNET_new(struct AcceptState);
+		accept_state->hash = dht_key_of_accept_state;
+		GNUNET_CONTAINER_DLL_insert(channel->as_head,
+																channel->accepts_states_tail,
+																accept_state);
+
+		channel->channel = GNUNET_MULTICAST_origin_start(cfg, /** config handle **/
+																											private_channel_key, /** private key **/
+																											1, /** max_fragment_id **/
+																											NULL, /** join_req_cb **/
+																											NULL, /** member_test_cb **/
+																											NULL, /** replay_fragment_cb **/
+																											NULL, /** replay_msg_cb **/
+																											NULL, /** req_cb **/
+																											NULL, /** msg_cb **/
+																											NULL);/** cls **/
+		GNUNET_CONTAINER_DLL_insert(multicast_channels_head,
+																multicast_channels_tail,
+																channel);
+	}
+
+	GNUNET_CRYPTO_eddsa_key_get_public(	channel->channel_private_key,
+																			&public_channel_key);
+
+	// (re-)announce channel
+	for (as_iter = channel->as_head; NULL != as_iter; as_iter = as_iter->next) {
+		// create announce key of the channel for this accept state
+		GNUNET_CRYPTO_hash(	as_iter->hash,
+												sizeof(struct GNUNET_HashCode),
+												announce_key);
+
+		GNUNET_DHT_put(dht_handle, announce_key, 3, // replication
+										GNUNET_DHT_RO_NONE,
+										GNUNET_BLOCK_TYPE_ANY, // TODO add mqtt channel blocktype to DHT
+										sizeof(struct GNUNET_HashCode),
+										public_channel_key,
+										channel->expiration,
+										GNUNET_TIME_absolute_get_remaining(channel->expiration),
+										NULL,
+										NULL);
+	}
+
+	// publish message
+
 
   /*
    * We may have delivered the message to the peer already if it has
