@@ -364,6 +364,21 @@ struct AcceptState
 	int announced;
 };
 
+struct PendingMulticastMessage
+{
+	/**
+	 * Element in a DLL.
+	 */
+	struct PendingMulticastMessage *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct PendingMulticastMessage *next;
+	/**
+	 * actual message
+	 */
+	struct GNUNET_MQTT_ClientPublishMessage msg;
+};
 
 /**
  * Our configuration.
@@ -1066,6 +1081,7 @@ static void search_for_subscribers (const char *topic,
 	GNUNET_CONTAINER_DLL_insert(sc_head, sc_tail, context);
 }
 
+static int send_multicast_message (void *cls, size_t *data_size, void *data);
 
 /**
  * Handle MQTT-PUBLISH-message.
@@ -1074,70 +1090,128 @@ static void search_for_subscribers (const char *topic,
  * @param client identification of the client
  * @param message the actual message
  */
-static void
-handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
-                     const struct GNUNET_MessageHeader *msg)
+static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
+		const struct GNUNET_MessageHeader *msg)
 {
-  char *topic, *message, *prefixed_topic;
-  FILE *persistence_file;
-  struct GNUNET_HashCode file_name_hash;
-  const char *file_name;
-  char *file_path;
-  size_t message_len;
+	char *topic, *message, *prefixed_topic;
+	size_t message_len;
+	size_t msg_len = ntohs(msg->size);
+	struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
 
-  size_t msg_len = ntohs (msg->size);
-  struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
+	/* Extract topic */
+	publish_msg = GNUNET_malloc(msg_len);
+	memcpy(publish_msg, msg, msg_len);
+	topic = GNUNET_malloc(publish_msg->topic_len);
+	strncpy(topic, (char * ) (publish_msg + 1), publish_msg->topic_len);
+	topic[publish_msg->topic_len - 1] = '\0';
 
-  if (NULL == folder_name)
-  {
-    GNUNET_break (0);
-    return;
-  }
-  /* Extract topic */
-  publish_msg = GNUNET_malloc (msg_len);
-  memcpy (publish_msg, msg, msg_len);
-  topic = GNUNET_malloc (publish_msg->topic_len);
-  strncpy(topic, (char *) (publish_msg + 1), publish_msg->topic_len);
-  topic[publish_msg->topic_len - 1] = '\0';
+	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
+	struct MulticastChannel *channel;
 
-  /* Extract message */
-  message_len = ntohs (publish_msg->header.size) -
-    sizeof (struct GNUNET_MQTT_ClientPublishMessage) - publish_msg->topic_len;
-  message = GNUNET_malloc (message_len);
-  strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
-          message_len);
-  message[message_len - 1] = '\0';
-  add_prefix (topic, &prefixed_topic);
-  GNUNET_CRYPTO_hash_create_random (GNUNET_CRYPTO_QUALITY_WEAK,
-				    &file_name_hash);
-  file_name = GNUNET_h2s_full(&file_name_hash);
-  GNUNET_asprintf (&file_path,
-		   "%s%s%s",
-		   folder_name,
-		   DIR_SEPARATOR_STR,
-		   file_name);
+	for (channel = multicast_channels_head; NULL != channel;
+			channel = channel->next) {
+		if (strncmp(channel->channel_topic, topic, strlen(topic)) == 0)
+			break;
+	}
 
-  if (NULL != (persistence_file = fopen(file_path, "w+")))
-  {
-    fwrite(topic, 1, strlen(topic)+1, persistence_file);
-    fwrite(message, 1, strlen(message), persistence_file);
-    fclose(persistence_file);
-    search_for_subscribers (prefixed_topic, publish_msg, file_path);
-  }
-  else
-  {
-    GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,
-			      "open",
-			      file_path);
-  }
-  LOG (GNUNET_ERROR_TYPE_DEBUG,
-              "outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
-              topic,
-	      publish_msg->topic_len,
-	      ntohs (publish_msg->header.size));
-  GNUNET_SERVER_receive_done (client, GNUNET_OK);
+	if (channel == NULL) {
+
+		/* create Multicast channel */
+		if (NULL == (private_channel_key = GNUNET_CRYPTO_eddsa_key_create())) {
+			LOG(GNUNET_ERROR_TYPE_ERROR,
+					"Could not retrieve public key for private eddsa key %s, aborting\n",
+					private_channel_key->d);
+			return;
+		}
+
+		// create the channel
+		channel = GNUNET_new(struct MulticastChannel);
+		channel->channel_private_key = (*private_channel_key);
+		GNUNET_free(private_channel_key);
+		strcpy(channel->channel_topic, topic);
+		channel->expiration =
+				GNUNET_TIME_relative_to_absolute(GNUNET_TIME_relative_multiply( GNUNET_TIME_UNIT_HOURS,
+																																				12));
+
+		channel->channel =
+				GNUNET_MULTICAST_origin_start(cfg, /** config handle **/
+																			&channel->channel_private_key, /** private key **/
+																			1, /** max_fragment_id **/
+																			NULL, /** join_req_cb **/
+																			NULL, /** member_test_cb **/
+																			NULL, /** replay_fragment_cb **/
+																			NULL, /** replay_msg_cb **/
+																			NULL, /** req_cb **/
+																			NULL, /** msg_cb **/
+																			NULL);/** cls **/
+		GNUNET_CONTAINER_DLL_insert(multicast_channels_head,
+																multicast_channels_tail,
+																channel);
+	}
+
+	struct PendingMulticastMessage *pub_msg =
+			GNUNET_new(struct PendingMulticastMessage);
+	memcpy(	&pub_msg->msg,
+					publish_msg,
+					sizeof(struct GNUNET_MQTT_ClientPublishMessage));
+	GNUNET_CONTAINER_DLL_insert(channel->pending_head,
+															channel->pending_tail,
+															pub_msg);
+	/* Extract message */
+//  message_len = ntohs (publish_msg->header.size) -
+//    sizeof (struct GNUNET_MQTT_ClientPublishMessage) - publish_msg->topic_len;
+//  message = GNUNET_malloc (message_len);
+//  strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
+//          message_len);
+//  message[message_len - 1] = '\0';
+//  add_prefix (topic, &prefixed_topic);
+	struct PendingMulticastMessage *pending_msg;
+	for (pending_msg = channel->pending_head; NULL != pending_msg; pending_msg =
+			pending_msg->next) {
+		// send all pending messages
+		GNUNET_MULTICAST_origin_to_all(	channel,
+																		0,
+																		0,
+																		send_multicast_message,
+																		pending_msg);
+	}
+
+	search_for_subscribers(prefixed_topic, publish_msg, channel);
+
+	LOG_DEBUG("outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
+						topic,
+						publish_msg->topic_len,
+						ntohs (publish_msg->header.size));
+	GNUNET_SERVER_receive_done(client, GNUNET_OK);
 }
 
+/**
+ * Send multicast message callback
+ *
+ * @param cls closure, should be the message (of type PendingMulticastMessage)
+ * @param data_size buffer size
+ * @param data buffer
+ *
+ */
+static int send_multicast_message (void *cls, size_t *data_size, void *data)
+{
+	struct PendingMulticastMessage *pub_msg = cls;
+	size_t msg_size = pub_msg->msg.header.size;
+	if (*data_size < msg_size) {
+		GNUNET_log(	GNUNET_ERROR_TYPE_DEBUG,
+								"Failed to send multicast message, transmit_notify: buffer too small, need %d but only %d available.\n",
+								msg_size,
+								*data_size);
+		*data_size = 0;
+		return GNUNET_NO;
+	}
+
+	LOG_DEBUG("transmit_notify: sending %u bytes.\n", msg_size);
+
+	*data_size = msg_size;
+	memcpy(data, &pub_msg->msg, msg_size);
+	GNUNET_free(pub_msg);
+}
 
 /**
  * Callback called on each GET request going through the DHT.
@@ -1874,106 +1948,6 @@ incoming_channel_destroyed_callback (void *cls,
  * Look for old messages and call try to deliver them again by calling
  * regex search
  */
-static void
-look_for_old_messages ()
-{
-  DIR *dir;
-  FILE *file;
-  struct dirent *ent;
-  char *file_path;
-  char *topic;
-  char *aux;
-  char *prefixed_topic;
-  size_t struct_size;
-  size_t n;
-  int ch;
-  long long length;
-  struct GNUNET_MQTT_ClientPublishMessage *old_publish_msg;
-
-  uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
-				      UINT64_MAX);
-  folder_name = NULL;
-  if (GNUNET_OK !=
-      GNUNET_CONFIGURATION_get_value_filename (cfg,
-					                                     "MQTT",
-					                                     "MESSAGE_FOLDER",
-					                                     &folder_name))
-  {
-    GNUNET_log_config_missing (GNUNET_ERROR_TYPE_ERROR,
-			       "MQTT", "MESSAGE_FOLDER");
-    return;
-  }
-
-  if (NULL == (dir = opendir (folder_name)))
-  {
-    GNUNET_DISK_directory_create (folder_name);
-    return;
-  }
-
-  while (NULL != (ent = readdir (dir)))
-  {
-    if (!strcmp (ent->d_name, ".") || !strcmp (ent->d_name, ".."))
-      continue;
-
-    GNUNET_asprintf (&file_path,
-		                 "%s%s%s",
-		                 folder_name,
-		                 DIR_SEPARATOR_STR,
-		                 ent->d_name);
-    file = fopen (file_path, "r");
-    if (NULL == file)
-    {
-      GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,
-				                        "open",
-				                        file_path);
-      GNUNET_free (file_path);
-      continue;
-    }
-    n = 0;
-    fseeko (file, 0, SEEK_END); // seek to end
-    length = ftello (file); // determine offset of end
-    rewind (file);  // restore position
-
-    struct_size = sizeof (struct GNUNET_MQTT_ClientPublishMessage) + length + 1;
-
-    old_publish_msg = GNUNET_malloc (struct_size);
-    old_publish_msg->header.size = htons (struct_size);
-    old_publish_msg->header.type =
-        htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH);
-    old_publish_msg->request_id = ++uid_gen;
-
-    aux = (char*) &old_publish_msg[1];
-    while ((ch = fgetc (file)) != EOF && (ch != '\0') )
-    {
-      aux[n] = (char) ch;
-      n++;
-    }
-
-    old_publish_msg->topic_len = n + 1;
-    aux[n] = '\0';
-    n++;
-    while ((ch = fgetc (file)) != EOF )
-    {
-      aux[n] = (char) ch;
-      n++;
-    }
-
-    aux[n] = '\0';
-
-    topic = GNUNET_malloc (old_publish_msg->topic_len);
-    strncpy (topic, (char *) (old_publish_msg + 1), old_publish_msg->topic_len);
-    topic[old_publish_msg->topic_len - 1] = '\0';
-
-    add_prefix (topic, &prefixed_topic);
-
-    LOG(GNUNET_ERROR_TYPE_DEBUG, "Looking to deliver old message from path %s\n", file_path);
-    search_for_subscribers (prefixed_topic, old_publish_msg, file_path);
-    GNUNET_free (file_path);
-    GNUNET_free (topic);
-  }
-  closedir (dir);
-}
-
 
 /**
  * Process statistics requests.
@@ -2035,7 +2009,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
   GNUNET_SCHEDULER_add_delayed (GNUNET_TIME_UNIT_FOREVER_REL,
 	                              &shutdown_task,
                                 NULL);
-  look_for_old_messages ();
+	//look_for_old_messages();
 }
 
 
