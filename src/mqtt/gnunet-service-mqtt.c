@@ -156,6 +156,28 @@ struct ClientInfo
 
 
 /**
+ * List item used to have a record of all current DHT Monitor operations
+ */
+struct DhtMonitorList
+{
+  /**
+   * Linked list of active clients
+   */
+  struct DhtMonitorList *next;
+
+  /**
+   * Linked list of active clients
+   */
+  struct DhtMonitorList *prev;
+
+  /**
+   * Handle to a running DHT Monitor operation
+   */
+  struct GNUNET_DHT_MonitorHandle *monitor_handle;
+};
+
+
+/**
  * Struct containing information about a client,
  * handle to connect to it, and any pending messages
  * that need to be sent to it.
@@ -234,6 +256,16 @@ struct Subscription
    * The automaton built using the subcription provided by the user
    */
   regex_t automaton;
+
+  /**
+   * First item in the list of running DHT Monitor operations
+   */
+  struct DhtMonitorList *dht_monitor_list_head;
+
+  /**
+   * Last item in the list of running DHT Monitor operations
+   */
+  struct DhtMonitorList *dht_monitor_list_tail;
 };
 
 
@@ -326,6 +358,27 @@ static const char *plus_regex = "(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|
  * String constant for replacing '#' wildcard in the subscribed topics.
  */
 static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+)*";
+
+
+/**
+ * Returns a string containing the hexadecimal representation of mem
+ *
+ * @param mem The memory to dump
+ * @param size the amount of bytes to dump
+ *
+ * @return A string containing memory as hex, must be freed by caller
+ */
+static char *
+memdump (const void *mem, size_t size)
+{
+  char *ret = GNUNET_malloc (2 * size + 1);
+  uint32_t i = 0;
+  for(i = 0; i < size; i++)
+  {
+    snprintf (&ret[2 * i], 2 * (size - i) + 1, "%02X", ((uint8_t *) mem)[i]);
+  }
+  return ret;
+}
 
 
 /**
@@ -496,6 +549,18 @@ subscription_free (struct Subscription *subscription)
 {
   regfree (&subscription->automaton);
   GNUNET_REGEX_announce_cancel (subscription->regex_announce_handle);
+
+  struct DhtMonitorList *pos = subscription->dht_monitor_list_head;
+  while (pos != NULL)
+  {
+    GNUNET_DHT_monitor_stop (pos->monitor_handle);
+    GNUNET_CONTAINER_DLL_remove (subscription->dht_monitor_list_head,
+                                 subscription->dht_monitor_list_tail,
+                                 pos);
+    GNUNET_free (pos);
+    pos = pos->next;
+  }
+
   GNUNET_free (subscription);
 }
 
@@ -921,6 +986,252 @@ handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 
 
 /**
+ * Callback called on each GET request going through the DHT.
+ *
+ * @param cls Closure.
+ * @param options Options, for instance RecordRoute, DemultiplexEverywhere.
+ * @param type The type of data in the request.
+ * @param hop_count Hop count so far.
+ * @param path_length number of entries in @a path (or 0 if not recorded).
+ * @param path peers on the GET path (or NULL if not recorded).
+ * @param desired_replication_level Desired replication level.
+ * @param key Key of the requested data.
+ */
+static void
+subscriber_monitor_get_cb (void *cls,
+    enum GNUNET_DHT_RouteOption options,
+    enum GNUNET_BLOCK_Type type,
+    uint32_t hop_count,
+    uint32_t desired_replication_level,
+    unsigned int path_length,
+    const struct GNUNET_PeerIdentity *path,
+    const struct GNUNET_HashCode * key)
+{
+  char *key_str = memdump (key, sizeof (struct GNUNET_HashCode));
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitor get callback called 0x%s\n",
+       key_str);
+  GNUNET_free (key_str);
+}
+
+
+/**
+ * Callback called on each GET reply going through the DHT.
+ *
+ * @param cls Closure.
+ * @param type The type of data in the result.
+ * @param get_path Peers on GET path (or NULL if not recorded).
+ * @param get_path_length number of entries in @a get_path.
+ * @param put_path peers on the PUT path (or NULL if not recorded).
+ * @param put_path_length number of entries in @a get_path.
+ * @param exp Expiration time of the data.
+ * @param key Key of the data.
+ * @param data Pointer to the result data.
+ * @param size Number of bytes in @a data.
+ */
+static void
+subscriber_monitor_get_response_cb (void *cls,
+    enum GNUNET_BLOCK_Type type,
+    const struct GNUNET_PeerIdentity *get_path,
+    unsigned int get_path_length,
+    const struct GNUNET_PeerIdentity *put_path,
+    unsigned int put_path_length,
+    struct GNUNET_TIME_Absolute exp,
+    const struct GNUNET_HashCode *key,
+    const void *data,
+    size_t size)
+{
+  char *key_str = memdump (key, sizeof (struct GNUNET_HashCode));
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitor get response callback called 0x%s\n",
+       key_str);
+  GNUNET_free (key_str);
+
+  char *data_str = memdump (data, size);
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitor get response data 0x%s\n",
+       data_str);
+  GNUNET_free (data_str);
+}
+
+
+/**
+ * Callback called on each PUT request going through the DHT.
+ *
+ * @param cls Closure.
+ * @param options Options, for instance RecordRoute, DemultiplexEverywhere.
+ * @param type The type of data in the request.
+ * @param hop_count Hop count so far.
+ * @param path_length number of entries in @a path (or 0 if not recorded).
+ * @param path peers on the PUT path (or NULL if not recorded).
+ * @param desired_replication_level Desired replication level.
+ * @param exp Expiration time of the data.
+ * @param key Key under which data is to be stored.
+ * @param data Pointer to the data carried.
+ * @param size Number of bytes in data.
+ */
+static void
+subscriber_monitor_put_cb (void *cls,
+    enum GNUNET_DHT_RouteOption options,
+    enum GNUNET_BLOCK_Type type,
+    uint32_t hop_count,
+    uint32_t desired_replication_level,
+    unsigned int path_length,
+    const struct GNUNET_PeerIdentity *path,
+    struct GNUNET_TIME_Absolute exp,
+    const struct GNUNET_HashCode *key,
+    const void *data,
+    size_t size)
+{
+  // todo implemento
+  char *key_str = memdump (key, sizeof (struct GNUNET_HashCode) / 2);
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitor put callback called 0x%s\n",
+       key_str);
+  GNUNET_free (key_str);
+
+  char *data_str = memdump (data, size);
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitor put data 0x%s\n",
+       data_str);
+  GNUNET_free (data_str);
+}
+
+
+/**
+ * Issue DHT-Monitor for each accepting state
+ *
+ * @param cls Subscriber_Conf
+ * @param key current key code. Will be monitored
+ * @param value value in the hash map, expected to bet the proof
+ *
+ * @return #GNUNET_YES if we should continue to iterate, #GNUNET_NO if not.
+ */
+static int
+monitor_accepting_state_iterator (void *cls,
+    const struct GNUNET_HashCode *key,
+    void *value)
+{
+  char *state_string = memdump (key, sizeof (struct GNUNET_HashCode) / 2);
+  LOG (GNUNET_ERROR_TYPE_DEBUG,
+       "Subscriber monitoring state %s 0x%s\n",
+       value,
+       state_string);
+  GNUNET_free (state_string);
+
+  if (NULL == dht_handle)
+  {
+      LOG (GNUNET_ERROR_TYPE_ERROR,
+           "Subscriber can not connect to DHT\n");
+      return GNUNET_NO;
+  }
+
+  struct Subscription *subscription = (struct Subscription *) cls;
+
+  struct DhtMonitorList *monitor_item = GNUNET_new (struct DhtMonitorList);
+  monitor_item->monitor_handle = GNUNET_DHT_monitor_start (dht_handle,
+                            GNUNET_BLOCK_TYPE_ANY, // todo tweak to get better results
+                            key,
+                            &subscriber_monitor_get_cb,
+                            &subscriber_monitor_get_response_cb,
+                            &subscriber_monitor_put_cb,
+                            subscription);
+  GNUNET_CONTAINER_DLL_insert (subscription->dht_monitor_list_head,
+                               subscription->dht_monitor_list_tail,
+                               monitor_item);
+
+  return GNUNET_YES;
+}
+
+
+/**
+ * Iterator over hash map entries and destroy each of them
+ *
+ * @param cls ignored
+ * @param key current key code
+ * @param value value in the hash map, expected to be a pointer to the proof
+ *
+ * @return #GNUNET_YES if we should continue to iterate, #GNUNET_NO if not.
+ */
+static int
+destroy_accepting_state_iterator (void *cls,
+    const struct GNUNET_HashCode *key,
+    void *value)
+{
+  if (NULL != value)
+  {
+    GNUNET_free (value);
+  }
+  return GNUNET_YES;
+}
+
+
+/**
+ * Issue a DHT monitor operation on the accepting states of the given DHT
+ *
+ * @param cls The subscription
+ * @param a The original announcement
+ * @param accepting_states A map containing all accepting states, or NULL if
+ *        something went terribly wrong
+ *
+ * This is called as a callback from the lookup of
+ * GNUNET_REGEX_announce_get_accepting_dht_entries done in
+ * handle_mqtt_subscribe
+ */
+static void
+monitor_accepting_states_for_subscription_cb (void *cls,
+    struct GNUNET_REGEX_Announcement *a,
+    struct GNUNET_CONTAINER_MultiHashMap *accepting_states)
+{
+  struct Subscription *subscription = (struct Subscription *) cls;
+  if (a == subscription->regex_announce_handle)
+  {
+    int result = GNUNET_CONTAINER_multihashmap_iterate (accepting_states,
+                                                        monitor_accepting_state_iterator,
+                                                        subscription);
+    if (GNUNET_OK != result)
+    {
+      // todo the monitoring failed, what to do?
+    }
+  }
+  else
+  {
+    LOG (GNUNET_ERROR_TYPE_ERROR, "Closure and Announcement do not match!\n");
+  }
+
+  GNUNET_CONTAINER_multihashmap_iterate (accepting_states,
+                                         destroy_accepting_state_iterator,
+                                         NULL);
+  GNUNET_CONTAINER_multihashmap_destroy (accepting_states);
+}
+
+
+/**
+ * Issue a DHT monitor operation on the accepting states of the given DHT
+ *
+ * @param cls The subscription
+ * @param a The original announcement
+ * @param accepting_states A map containing all accepting states, or NULL if
+ *        something went terribly wrong
+ *
+ * This is called as a callback from the lookup of
+ * GNUNET_REGEX_announce_get_accepting_dht_entries done in
+ * handle_mqtt_subscribe
+ */
+static void
+find_channel_information_for_accepting_states (void *cls,
+    struct GNUNET_REGEX_Announcement *a,
+    struct GNUNET_CONTAINER_MultiHashMap *accepting_states)
+{
+  // todo look up if you can find it somewhere somehow
+
+  // HACKY HACK: by default we just assume there is no channel information in
+  // the DHT and do a monitor for puts
+  monitor_accepting_states_for_subscription_cb (cls, a, accepting_states);
+}
+
+
+/**
  * Handle MQTT SUBSCRIBE message.
  *
  * @param cls closure
@@ -965,8 +1276,44 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 
   refresh_interval = GNUNET_TIME_relative_multiply (
       GNUNET_TIME_UNIT_MINUTES, 1);
+  // todo change to GNUNET_REGEX_announce_with_key
+#if 1
 	subscription->regex_announce_handle =
-			GNUNET_REGEX_announce(cfg, regex_topic,refresh_interval,NULL);
+			GNUNET_REGEX_announce(cfg, regex_topic, refresh_interval, NULL);
+#else
+	subscription->regex_announce_handle =
+	      GNUNET_REGEX_announce_with_key (cfg, regex_topic, refresh_interval,
+	                                      NULL, GNUNET_CRYPTO_eddsa_key_get_anonymous ());
+#endif
+	if (NULL == subscription->regex_announce_handle)
+	{
+	  LOG (GNUNET_ERROR_TYPE_ERROR,
+         "MQTT SUBSCRIBE can not do REGEX announce: %s -> %s\n",
+         topic,
+         regex_topic);
+	  GNUNET_CONTAINER_DLL_remove (subscription_head, subscription_tail,
+	                               subscription);
+	  GNUNET_free (subscription);
+    GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
+    return;
+	}
+
+	int accepting_req_result = GNUNET_REGEX_announce_get_accepting_dht_entries (
+	    subscription->regex_announce_handle,
+	    find_channel_information_for_accepting_states,
+	    subscription);
+	if (GNUNET_YES != accepting_req_result)
+	{
+	  LOG (GNUNET_ERROR_TYPE_ERROR,
+         "MQTT SUBSCRIBE can not do REGEX accepting state lookup: %s -> %s\n",
+         topic,
+         regex_topic);
+    GNUNET_CONTAINER_DLL_remove (subscription_head, subscription_tail,
+                                 subscription);
+    GNUNET_free (subscription);
+    GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
+    return;
+	}
 
   LOG (GNUNET_ERROR_TYPE_DEBUG,
        "MQTT SUBSCRIBE message received: %s -> %s\n",
