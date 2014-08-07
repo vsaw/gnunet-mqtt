@@ -38,6 +38,26 @@
 
 #define LOG(kind,...) GNUNET_log_from (kind, "mqtt",__VA_ARGS__)
 /**
+ * Log debug messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ *
+ */
+#define LOG_DEBUG(...) LOG (GNUNET_ERROR_TYPE_DEBUG, __VA_ARGS__)
+/**
+ * Log error messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ */
+#define LOG_ERROR(...) LOG (GNUNET_ERROR_TYPE_ERROR, __VA_ARGS__)
+/**
+ * Log warning messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ */
+#define LOG_WARNING(...) LOG (GNUNET_ERROR_TYPE_WARNING, __VA_ARGS__)
+
+/**
  * Struct representing the context for the regex search
  */
 struct RegexSearchContext
