@@ -31,7 +31,7 @@
 #include <gnunet/gnunet_mesh_service.h>
 #include <gnunet/gnunet_applications.h>
 #include <gnunet/gnunet_configuration_lib.h>
-#include <gnunet_multicast_service.h>
+#include <gnunet/gnunet_multicast_service.h>
 #include "gnunet_protocols_mqtt.h"
 #include "mqtt.h"
 #include <regex.h>
