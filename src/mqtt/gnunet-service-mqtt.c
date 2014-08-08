@@ -31,11 +31,32 @@
 #include <gnunet/gnunet_mesh_service.h>
 #include <gnunet/gnunet_applications.h>
 #include <gnunet/gnunet_configuration_lib.h>
+#include <gnunet/gnunet_multicast_service.h>
 #include "gnunet_protocols_mqtt.h"
 #include "mqtt.h"
 #include <regex.h>
 
 #define LOG(kind,...) GNUNET_log_from (kind, "mqtt",__VA_ARGS__)
+/**
+ * Log debug messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ *
+ */
+#define LOG_DEBUG(...) LOG (GNUNET_ERROR_TYPE_DEBUG, __VA_ARGS__)
+/**
+ * Log error messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ */
+#define LOG_ERROR(...) LOG (GNUNET_ERROR_TYPE_ERROR, __VA_ARGS__)
+/**
+ * Log warning messages for this module
+ *
+ * @param ... The format sting and optional arguments
+ */
+#define LOG_WARNING(...) LOG (GNUNET_ERROR_TYPE_WARNING, __VA_ARGS__)
+
 /**
  * Struct representing the context for the regex search
  */
@@ -56,6 +77,10 @@ struct RegexSearchContext
    * Pointer to the publish message
    */
   struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
+	/**
+	 * Channel that serves the topic we are searching subscribers for
+	 */
+	struct MulticastChannel *channel;
 
   /**
    * Pointer to the filepath where the topic and the content of the
@@ -268,6 +293,92 @@ struct Subscription
   struct DhtMonitorList *dht_monitor_list_tail;
 };
 
+/**
+ * Struct describing a multicast channel, it's matching topic subscription
+ * accept states keys, which are covered so far.
+ */
+struct MulticastChannel {
+	/**
+	 * Expiration of the dht channel announcement
+	 */
+	struct GNUNET_TIME_Absolute expiration;
+	/**
+	 * Private key used to create the channel
+	 */
+	struct GNUNET_CRYPTO_EddsaPrivateKey channel_private_key;
+	/**
+	 * Element in a DLL.
+	 */
+	struct MulticastChannel *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct MulticastChannel *next;
+	/**
+	 * Multicast Channel handle
+	 */
+	struct GNUNET_MULTICAST_Origin *channel;
+	/**
+	 * topic that the channel is broadcasting about
+	 */
+	char *channel_topic;
+	/**
+	 * DLL head of accept states that are served by this Channel
+	 */
+	struct AcceptState *as_head;
+	/**
+	 * DLL tail of accept states that are served by this Channel
+	 */
+	struct AcceptState *as_tail;
+	/**
+	 * pending messegaes DLL
+	 */
+	struct PendingMulticastMessage *pending_head;
+	/**
+	 * pending messegaes DLL
+	 */
+	struct PendingMulticastMessage *pending_tail;
+};
+
+/**
+ * DHT keys of regex accept states
+ */
+struct AcceptState
+{
+	/**
+	 * Element in a DLL.
+	 */
+	struct AcceptState *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct AcceptState *next;
+	/**
+	 * DHT key of the accept state
+	 */
+	struct GNUNET_HashCode hash;
+
+	/**
+	 * If the accept state was announced in the DHT, takes GNUNET_YES and GNUNET_NO as values
+	 */
+	int announced;
+};
+
+struct PendingMulticastMessage
+{
+	/**
+	 * Element in a DLL.
+	 */
+	struct PendingMulticastMessage *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct PendingMulticastMessage *next;
+	/**
+	 * actual message
+	 */
+	struct GNUNET_MQTT_ClientPublishMessage msg;
+};
 
 /**
  * Our configuration.
@@ -359,6 +470,15 @@ static const char *plus_regex = "(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|
  */
 static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9)+)*";
 
+/**
+ * Head of DLL of all multicast channels maintained by this service (publisher)
+ */
+static struct MulticastChannel* multicast_channels_head;
+
+/**
+ * Tail of DLL of all multicast channels maintained by this service (publisher)
+ */
+static struct MulticastChannel* multicast_channels_tail;
 
 /**
  * Returns a string containing the hexadecimal representation of mem
@@ -607,26 +727,12 @@ remote_subscriber_info_free (struct RemoteSubscriberInfo *subscriber)
  *
  * @param context pointer to a RegexSearchContext struct
  */
-static void
-regex_search_context_free (struct RegexSearchContext *context)
+static void regex_search_context_free (struct RegexSearchContext *context)
 {
-  if (GNUNET_YES == context->message_delivered)
-  {
-    char *filepath = context->file_path;
-
-    if (GNUNET_SCHEDULER_NO_TASK != context->free_task)
-      GNUNET_SCHEDULER_cancel (context->free_task);
-
-    if (0 != UNLINK (filepath))
-      GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,
-				"unlink",
-				filepath);
-  }
-  GNUNET_CONTAINER_multipeermap_destroy (context->subscribers);
-  GNUNET_REGEX_search_cancel (context->regex_search_handle);
-  GNUNET_free (context->publish_msg);
-  GNUNET_free (context->file_path);
-  GNUNET_free (context);
+	GNUNET_CONTAINER_multipeermap_destroy(context->subscribers);
+	GNUNET_REGEX_search_cancel(context->regex_search_handle);
+	GNUNET_free(context->publish_msg);
+	GNUNET_free(context);
 }
 
 
@@ -802,81 +908,154 @@ deliver_incoming_publish (const struct GNUNET_MQTT_ClientPublishMessage *msg,
  * @param put_path Path of the put request
  * @param put_path_length length of the @a put_path
  */
-static void
-subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
-                       const struct GNUNET_PeerIdentity *get_path,
-                       unsigned int get_path_length,
-                       const struct GNUNET_PeerIdentity *put_path,
-                       unsigned int put_path_length)
+static void subscribed_peer_found (void *cls,
+		const struct GNUNET_PeerIdentity *id,
+		const struct GNUNET_PeerIdentity *get_path, unsigned int get_path_length,
+		const struct GNUNET_PeerIdentity *put_path, unsigned int put_path_length,
+		const struct GNUNET_HashCode *key)
 {
-  struct PendingMessage *pm;
-  struct RemoteSubscriberInfo *subscriber;
-  struct GNUNET_MessageHeader *msg;
-  struct RegexSearchContext *context = cls;
-  size_t msg_len = ntohs (context->publish_msg->header.size);
 
-  LOG (GNUNET_ERROR_TYPE_DEBUG,
-       "--------> Found an active subscription from %s\n",
-	     GNUNET_i2s (id));
+	/** multicast stuff **/
+	struct RegexSearchContext *context = cls;
+	struct MulticastChannel* channel = context->channel;
 
-  /*
-   * We may have delivered the message to the peer already if it has
-   * other matching subscriptions; ignore this search result if that is
-   * the case.
-   */
-  if (GNUNET_CONTAINER_multipeermap_contains (context->subscribers,
-                                              id))
-    return;
+	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
+	struct GNUNET_CRYPTO_EddsaPublicKey public_channel_key;
 
-  GNUNET_CONTAINER_multipeermap_put (context->subscribers, id,
-    NULL, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
-  subscriber = GNUNET_CONTAINER_multipeermap_get (remote_subscribers,
-                                                  id);
+	struct GNUNET_HashCode dht_key_of_accept_state;
+	// hash of dht_key_af_acceptt_state
+	struct GNUNET_HashCode announce_key;
+	// loop variable
+	struct AcceptState *as_iter;
+	struct GNUNET_TIME_Relative remaing_announce_time =
+			GNUNET_TIME_absolute_get_remaining(channel->expiration);
 
-  if (0 == memcmp (id, &my_id, sizeof (struct GNUNET_PeerIdentity)))
-  {
-    LOG (GNUNET_ERROR_TYPE_DEBUG,
-         "fast tracking PUBLISH message to local subscribers\n");
+	LOG_DEBUG("--------> Found an active subscription for topic %s with accept state key %#x\n",
+			channel->channel_topic, key->bits);
 
-    deliver_incoming_publish (context->publish_msg, context);
-    return;
-  }
+	// check if this channel serves the found accept state
+	for (as_iter = channel->as_head; NULL != as_iter; as_iter = as_iter->next) {
+		if (dht_key_of_accept_state.bits == as_iter->hash.bits) {
+			// channel for this dht accept state
+			if (remaing_announce_time.rel_value_us > 0 && as_iter->announced == GNUNET_YES)
+				return; // active announcement in the DHT already, done here
 
-  msg = GNUNET_malloc (msg_len);
-  memcpy (msg, context->publish_msg, msg_len);
+		}
+	}
 
-  pm = GNUNET_new (struct PendingMessage);
-  pm->msg = msg;
-  pm->context = context;
+	if (as_iter == NULL) {
+		// new accept state for the channel
+		struct AcceptState *new_ac = GNUNET_new(struct AcceptState);
+		new_ac->announced = GNUNET_NO;
+		new_ac->hash = *key;
+		GNUNET_CONTAINER_DLL_insert(channel->as_head, channel->as_tail, new_ac);
 
-  if (NULL == subscriber)
-  {
-    LOG (GNUNET_ERROR_TYPE_DEBUG,
-                "creating a new channel to %s\n", GNUNET_i2s(id));
+		LOG_DEBUG("Adding new accept state to channel\n");
+	}
 
-    subscriber = GNUNET_new (struct RemoteSubscriberInfo);
+	if (remaing_announce_time.rel_value_us == 0) {
+		// channel announcment expired, need to reannounce for all accept states
+		channel->expiration =
+				GNUNET_TIME_relative_to_absolute(GNUNET_TIME_relative_multiply( GNUNET_TIME_UNIT_HOURS,
+																																				12));
+		for (as_iter = channel->as_head; NULL != as_iter; as_iter = as_iter->next) {
+			as_iter->announced = GNUNET_NO;
+		}
+		LOG_DEBUG("Channel expired, re-announce under all known accept states\n");
+	}
 
-    subscriber->channel = GNUNET_MESH_channel_create (mesh_handle,
-                                                      NULL,
-                                                      id,
-                                                      GNUNET_APPLICATION_TYPE_MQTT,
-                                                      GNUNET_MESH_OPTION_RELIABLE);
-    subscriber->peer_added = GNUNET_NO;
-    subscriber->peer_connecting = GNUNET_NO;
 
-    subscriber->id = *id;
+	GNUNET_CRYPTO_eddsa_key_get_public(	&(channel->channel_private_key),
+																			&public_channel_key);
 
-    GNUNET_CONTAINER_multipeermap_put (remote_subscribers, id,
-      subscriber, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
-  }
+	// announce channel
+	for (as_iter = channel->as_head; NULL != as_iter; as_iter = as_iter->next) {
+		if (as_iter->announced == GNUNET_NO) {
+			// create announce key of the channel for this accept state
+			GNUNET_CRYPTO_hash(	&as_iter->hash,
+													sizeof(struct GNUNET_HashCode),
+													&announce_key);
 
-  LOG(GNUNET_ERROR_TYPE_DEBUG, "Maintaining %d remote subscribers\n",
-  			GNUNET_CONTAINER_multipeermap_size(remote_subscribers));
+			GNUNET_DHT_put(dht_handle, &announce_key, 3, // replication
+											GNUNET_DHT_RO_NONE,
+											GNUNET_BLOCK_TYPE_ANY, // TODO add mqtt channel blocktype to DHT
+											sizeof(struct GNUNET_HashCode),
+											&public_channel_key,
+											channel->expiration,
+											GNUNET_TIME_absolute_get_remaining(channel->expiration),
+											NULL,
+											NULL);
+			as_iter->announced = GNUNET_YES;
+			LOG_DEBUG("Announcing Channel for topic %s under dht key %#x\n",
+								channel->channel_topic,
+								announce_key.bits);
+		}
+	}
 
-  add_pending_subscriber_message (subscriber, pm);
-  subscriber->peer_added = GNUNET_YES;
-  subscriber->peer_connecting = GNUNET_NO;
-  process_pending_subscriber_messages (subscriber);
+	/* old stuff */
+
+//	struct PendingMessage *pm;
+//	struct RemoteSubscriberInfo *subscriber;
+//	struct GNUNET_MessageHeader *msg;
+//	size_t msg_len = ntohs(context->publish_msg->header.size);
+	/*
+	 * We may have delivered the message to the peer already if it has
+	 * other matching subscriptions; ignore this search result if that is
+	 * the case.
+	 */
+//  if (GNUNET_CONTAINER_multipeermap_contains (context->subscribers,
+//                                              id))
+//    return;
+//
+//  GNUNET_CONTAINER_multipeermap_put (context->subscribers, id,
+//    NULL, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
+//  subscriber = GNUNET_CONTAINER_multipeermap_get (remote_subscribers,
+//                                                  id);
+//
+//  if (0 == memcmp (id, &my_id, sizeof (struct GNUNET_PeerIdentity)))
+//  {
+//    LOG_DEBUG(
+//         "fast tracking PUBLISH message to local subscribers\n");
+//
+//    deliver_incoming_publish (context->publish_msg, context);
+//    return;
+//  }
+//
+//  msg = GNUNET_malloc (msg_len);
+//  memcpy (msg, context->publish_msg, msg_len);
+//
+//  pm = GNUNET_new (struct PendingMessage);
+//  pm->msg = msg;
+//  pm->context = context;
+//
+//  if (NULL == subscriber)
+//  {
+//    LOG_DEBUG(
+//                "creating a new channel to %s\n", GNUNET_i2s(id));
+//
+//    subscriber = GNUNET_new (struct RemoteSubscriberInfo);
+//
+//    subscriber->channel = GNUNET_MESH_channel_create (mesh_handle,
+//                                                      NULL,
+//                                                      id,
+//                                                      GNUNET_APPLICATION_TYPE_MQTT,
+//                                                      GNUNET_MESH_OPTION_RELIABLE);
+//    subscriber->peer_added = GNUNET_NO;
+//    subscriber->peer_connecting = GNUNET_NO;
+//
+//    subscriber->id = *id;
+//
+//    GNUNET_CONTAINER_multipeermap_put (remote_subscribers, id,
+//      subscriber, GNUNET_CONTAINER_MULTIHASHMAPOPTION_UNIQUE_FAST);
+//  }
+//
+//  LOG(GNUNET_ERROR_TYPE_DEBUG, "Maintaining %d remote subscribers\n",
+//  			GNUNET_CONTAINER_multipeermap_size(remote_subscribers));
+//
+//  add_pending_subscriber_message (subscriber, pm);
+//  subscriber->peer_added = GNUNET_YES;
+//  subscriber->peer_connecting = GNUNET_NO;
+//  process_pending_subscriber_messages (subscriber);
 }
 
 
@@ -886,32 +1065,28 @@ subscribed_peer_found (void *cls, const struct GNUNET_PeerIdentity *id,
  * @param topic of the message identification of the client
  * @param publish_msg the publish message
  */
-static void
-search_for_subscribers (const char *topic,
-                        struct GNUNET_MQTT_ClientPublishMessage *publish_msg,
-                        char *file_path)
+static void search_for_subscribers (const char *topic,
+		struct GNUNET_MQTT_ClientPublishMessage *publish_msg,
+		struct MulticastChannel *channel)
 {
 	struct RegexSearchContext *context;
-	LOG (GNUNET_ERROR_TYPE_DEBUG, "Searching for subscribers on topic %s\n",
-	         topic);
+	LOG_DEBUG("Searching for subscribers on topic %s\n", topic);
 
-  context = GNUNET_new (struct RegexSearchContext);
-  context->publish_msg = publish_msg;
-  // make a copy of the file path, as it might be freed by the caller
-  context->file_path = (char*) GNUNET_malloc (strlen (file_path)+1);;
-  strcpy(context->file_path, file_path);
-  context->message_delivered = GNUNET_NO;
-  context->free_task = GNUNET_SCHEDULER_NO_TASK;
-  context->subscribers = GNUNET_CONTAINER_multipeermap_create (1, GNUNET_NO);
+	context = GNUNET_new(struct RegexSearchContext);
+	context->publish_msg = publish_msg;
+	context->channel = channel;
+	context->message_delivered = GNUNET_NO;
+	context->free_task = GNUNET_SCHEDULER_NO_TASK;
+	context->subscribers = GNUNET_CONTAINER_multipeermap_create(1, GNUNET_NO);
 
-  context->regex_search_handle = GNUNET_REGEX_search (cfg, topic,
-                                                      &subscribed_peer_found,
-                                                      context);
-  GNUNET_CONTAINER_DLL_insert (sc_head,
-			       sc_tail,
-			       context);
+	context->regex_search_handle = GNUNET_REGEX_search(	cfg,
+																											topic,
+																											&subscribed_peer_found,
+																											context);
+	GNUNET_CONTAINER_DLL_insert(sc_head, sc_tail, context);
 }
 
+static int send_multicast_message (void *cls, size_t *data_size, void *data);
 
 /**
  * Handle MQTT-PUBLISH-message.
@@ -920,70 +1095,136 @@ search_for_subscribers (const char *topic,
  * @param client identification of the client
  * @param message the actual message
  */
-static void
-handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
-                     const struct GNUNET_MessageHeader *msg)
+static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
+		const struct GNUNET_MessageHeader *msg)
 {
-  char *topic, *message, *prefixed_topic;
-  FILE *persistence_file;
-  struct GNUNET_HashCode file_name_hash;
-  const char *file_name;
-  char *file_path;
-  size_t message_len;
+	LOG_DEBUG("enter handle_publish\n");
+	char *topic, *message, *prefixed_topic;
+	size_t message_len;
+	size_t msg_len = ntohs(msg->size);
+	struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
 
-  size_t msg_len = ntohs (msg->size);
-  struct GNUNET_MQTT_ClientPublishMessage *publish_msg;
+	/* Extract topic */
+	publish_msg = GNUNET_malloc(msg_len);
+	memcpy(publish_msg, msg, msg_len);
+	topic = GNUNET_malloc(publish_msg->topic_len);
+	strncpy(topic, (char * ) (publish_msg + 1), publish_msg->topic_len);
+	topic[publish_msg->topic_len - 1] = '\0';
 
-  if (NULL == folder_name)
-  {
-    GNUNET_break (0);
-    return;
-  }
-  /* Extract topic */
-  publish_msg = GNUNET_malloc (msg_len);
-  memcpy (publish_msg, msg, msg_len);
-  topic = GNUNET_malloc (publish_msg->topic_len);
-  strncpy(topic, (char *) (publish_msg + 1), publish_msg->topic_len);
-  topic[publish_msg->topic_len - 1] = '\0';
 
-  /* Extract message */
-  message_len = ntohs (publish_msg->header.size) -
-    sizeof (struct GNUNET_MQTT_ClientPublishMessage) - publish_msg->topic_len;
-  message = GNUNET_malloc (message_len);
-  strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
-          message_len);
-  message[message_len - 1] = '\0';
-  add_prefix (topic, &prefixed_topic);
-  GNUNET_CRYPTO_hash_create_random (GNUNET_CRYPTO_QUALITY_WEAK,
-				    &file_name_hash);
-  file_name = GNUNET_h2s_full(&file_name_hash);
-  GNUNET_asprintf (&file_path,
-		   "%s%s%s",
-		   folder_name,
-		   DIR_SEPARATOR_STR,
-		   file_name);
+	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
+	struct MulticastChannel *channel;
 
-  if (NULL != (persistence_file = fopen(file_path, "w+")))
-  {
-    fwrite(topic, 1, strlen(topic)+1, persistence_file);
-    fwrite(message, 1, strlen(message), persistence_file);
-    fclose(persistence_file);
-    search_for_subscribers (prefixed_topic, publish_msg, file_path);
-  }
-  else
-  {
-    GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,
-			      "open",
-			      file_path);
-  }
-  LOG (GNUNET_ERROR_TYPE_DEBUG,
-              "outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
-              topic,
-	      publish_msg->topic_len,
-	      ntohs (publish_msg->header.size));
-  GNUNET_SERVER_receive_done (client, GNUNET_OK);
+	for (channel = multicast_channels_head; NULL != channel;
+			channel = channel->next) {
+		if (strncmp(channel->channel_topic, topic, strlen(topic)) == 0)
+			break;
+	}
+
+	if (channel == NULL) {
+
+		/* create Multicast channel */
+		if (NULL == (private_channel_key = GNUNET_CRYPTO_eddsa_key_create())) {
+			LOG_ERROR("Could not retrieve public key for private eddsa key %s, aborting\n",
+								private_channel_key->d);
+			return;
+		}
+
+		// create the channel
+		channel = GNUNET_new(struct MulticastChannel);
+		channel->channel_private_key = (*private_channel_key);
+		GNUNET_free(private_channel_key);
+		channel->channel_topic = GNUNET_malloc(strlen(topic));
+		strcpy(channel->channel_topic, topic);
+		channel->expiration =
+				GNUNET_TIME_relative_to_absolute(GNUNET_TIME_relative_multiply( GNUNET_TIME_UNIT_HOURS,
+																																				12));
+
+		channel->channel =
+				GNUNET_MULTICAST_origin_start(cfg, /** config handle **/
+																			&channel->channel_private_key, /** private key **/
+																			1, /** max_fragment_id **/
+																			NULL, /** join_req_cb **/
+																			NULL, /** member_test_cb **/
+																			NULL, /** replay_fragment_cb **/
+																			NULL, /** replay_msg_cb **/
+																			NULL, /** req_cb **/
+																			NULL, /** msg_cb **/
+																			NULL);/** cls **/
+		GNUNET_CONTAINER_DLL_insert(multicast_channels_head,
+																multicast_channels_tail,
+																channel);
+		LOG_DEBUG("Created Channel with key %#x\n", private_channel_key->d);
+	}
+
+	struct PendingMulticastMessage *pub_msg =
+			GNUNET_new(struct PendingMulticastMessage);
+	memcpy(	&pub_msg->msg,
+					publish_msg,
+					sizeof(struct GNUNET_MQTT_ClientPublishMessage));
+	GNUNET_CONTAINER_DLL_insert(channel->pending_head,
+															channel->pending_tail,
+															pub_msg);
+	/* Extract message */
+//  message_len = ntohs (publish_msg->header.size) -
+//    sizeof (struct GNUNET_MQTT_ClientPublishMessage) - publish_msg->topic_len;
+//  message = GNUNET_malloc (message_len);
+//  strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
+//          message_len);
+//  message[message_len - 1] = '\0';
+//  add_prefix (topic, &prefixed_topic);
+
+	struct PendingMulticastMessage *pending_msg_iter;
+
+	for (pending_msg_iter = channel->pending_head; NULL != pending_msg_iter; pending_msg_iter =
+			pending_msg_iter->next) {
+
+		// send all pending messages
+		GNUNET_MULTICAST_origin_to_all(	channel->channel,
+																		0,
+																		0,
+																		send_multicast_message,
+																		pending_msg_iter);
+	}
+
+	search_for_subscribers(topic, publish_msg, channel);
+
+	LOG_DEBUG("outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
+						topic,
+						publish_msg->topic_len,
+						ntohs (publish_msg->header.size));
+	GNUNET_SERVER_receive_done(client, GNUNET_OK);
 }
 
+/**
+ * Send multicast message callback
+ *
+ * @param cls closure, should be the message (of type PendingMulticastMessage)
+ * @param data_size buffer size
+ * @param data buffer
+ *
+ */
+static int send_multicast_message (void *cls, size_t *data_size, void *data)
+{
+	LOG_DEBUG("enter send_munticast_message\n");
+
+	struct PendingMulticastMessage *pub_msg = cls;
+	size_t msg_size = pub_msg->msg.header.size;
+	if (*data_size < msg_size) {
+		GNUNET_log(	GNUNET_ERROR_TYPE_DEBUG,
+								"Failed to send multicast message, transmit_notify: buffer too small, need %d but only %d available.\n",
+								msg_size,
+								*data_size);
+		*data_size = 0;
+		return GNUNET_NO;
+	}
+
+	LOG_DEBUG("transmit_notify: sending %u bytes.\n", msg_size);
+
+	*data_size = msg_size;
+	memcpy(data, &pub_msg->msg, msg_size);
+	return GNUNET_YES;
+}
 
 /**
  * Callback called on each GET request going through the DHT.
@@ -1242,7 +1483,8 @@ static void
 handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
                        const struct GNUNET_MessageHeader *msg)
 {
-  struct Subscription *subscription;
+  LOG_DEBUG("enter handle_subscribe\n");
+	struct Subscription *subscription;
   char *topic, *regex_topic;
   struct GNUNET_TIME_Relative refresh_interval;
 
@@ -1261,7 +1503,7 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 		    regex_topic,
 		    REG_EXTENDED))
   {
-    LOG (GNUNET_ERROR_TYPE_WARNING,"Error building Regex from topic String\n");
+    LOG_WARNING("Error building Regex from topic String\n");
   	GNUNET_break (0);
     GNUNET_free (subscription);
     GNUNET_SERVER_receive_done (client, GNUNET_SYSERR);
@@ -1287,10 +1529,9 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 #endif
 	if (NULL == subscription->regex_announce_handle)
 	{
-	  LOG (GNUNET_ERROR_TYPE_ERROR,
-         "MQTT SUBSCRIBE can not do REGEX announce: %s -> %s\n",
-         topic,
-         regex_topic);
+		LOG_ERROR("MQTT SUBSCRIBE can not do REGEX announce: %s -> %s\n",
+							topic,
+							regex_topic);
 	  GNUNET_CONTAINER_DLL_remove (subscription_head, subscription_tail,
 	                               subscription);
 	  GNUNET_free (subscription);
@@ -1304,10 +1545,9 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
 	    subscription);
 	if (GNUNET_YES != accepting_req_result)
 	{
-	  LOG (GNUNET_ERROR_TYPE_ERROR,
-         "MQTT SUBSCRIBE can not do REGEX accepting state lookup: %s -> %s\n",
-         topic,
-         regex_topic);
+		LOG_ERROR("MQTT SUBSCRIBE can not do REGEX accepting state lookup: %s -> %s\n",
+							topic,
+							regex_topic);
     GNUNET_CONTAINER_DLL_remove (subscription_head, subscription_tail,
                                  subscription);
     GNUNET_free (subscription);
@@ -1315,11 +1555,8 @@ handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
     return;
 	}
 
-  LOG (GNUNET_ERROR_TYPE_DEBUG,
-       "MQTT SUBSCRIBE message received: %s -> %s\n",
-	     topic,
-	     regex_topic);
-  GNUNET_SERVER_receive_done (client, GNUNET_OK);
+	LOG_DEBUG("MQTT SUBSCRIBE message received: %s -> %s\n", topic, regex_topic);
+	GNUNET_SERVER_receive_done(client, GNUNET_OK);
 }
 
 
@@ -1723,106 +1960,6 @@ incoming_channel_destroyed_callback (void *cls,
  * Look for old messages and call try to deliver them again by calling
  * regex search
  */
-static void
-look_for_old_messages ()
-{
-  DIR *dir;
-  FILE *file;
-  struct dirent *ent;
-  char *file_path;
-  char *topic;
-  char *aux;
-  char *prefixed_topic;
-  size_t struct_size;
-  size_t n;
-  int ch;
-  long long length;
-  struct GNUNET_MQTT_ClientPublishMessage *old_publish_msg;
-
-  uid_gen = GNUNET_CRYPTO_random_u64 (GNUNET_CRYPTO_QUALITY_WEAK,
-				      UINT64_MAX);
-  folder_name = NULL;
-  if (GNUNET_OK !=
-      GNUNET_CONFIGURATION_get_value_filename (cfg,
-					                                     "MQTT",
-					                                     "MESSAGE_FOLDER",
-					                                     &folder_name))
-  {
-    GNUNET_log_config_missing (GNUNET_ERROR_TYPE_ERROR,
-			       "MQTT", "MESSAGE_FOLDER");
-    return;
-  }
-
-  if (NULL == (dir = opendir (folder_name)))
-  {
-    GNUNET_DISK_directory_create (folder_name);
-    return;
-  }
-
-  while (NULL != (ent = readdir (dir)))
-  {
-    if (!strcmp (ent->d_name, ".") || !strcmp (ent->d_name, ".."))
-      continue;
-
-    GNUNET_asprintf (&file_path,
-		                 "%s%s%s",
-		                 folder_name,
-		                 DIR_SEPARATOR_STR,
-		                 ent->d_name);
-    file = fopen (file_path, "r");
-    if (NULL == file)
-    {
-      GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,
-				                        "open",
-				                        file_path);
-      GNUNET_free (file_path);
-      continue;
-    }
-    n = 0;
-    fseeko (file, 0, SEEK_END); // seek to end
-    length = ftello (file); // determine offset of end
-    rewind (file);  // restore position
-
-    struct_size = sizeof (struct GNUNET_MQTT_ClientPublishMessage) + length + 1;
-
-    old_publish_msg = GNUNET_malloc (struct_size);
-    old_publish_msg->header.size = htons (struct_size);
-    old_publish_msg->header.type =
-        htons (GNUNET_MESSAGE_TYPE_MQTT_CLIENT_PUBLISH);
-    old_publish_msg->request_id = ++uid_gen;
-
-    aux = (char*) &old_publish_msg[1];
-    while ((ch = fgetc (file)) != EOF && (ch != '\0') )
-    {
-      aux[n] = (char) ch;
-      n++;
-    }
-
-    old_publish_msg->topic_len = n + 1;
-    aux[n] = '\0';
-    n++;
-    while ((ch = fgetc (file)) != EOF )
-    {
-      aux[n] = (char) ch;
-      n++;
-    }
-
-    aux[n] = '\0';
-
-    topic = GNUNET_malloc (old_publish_msg->topic_len);
-    strncpy (topic, (char *) (old_publish_msg + 1), old_publish_msg->topic_len);
-    topic[old_publish_msg->topic_len - 1] = '\0';
-
-    add_prefix (topic, &prefixed_topic);
-
-    LOG(GNUNET_ERROR_TYPE_DEBUG, "Looking to deliver old message from path %s\n", file_path);
-    search_for_subscribers (prefixed_topic, old_publish_msg, file_path);
-    GNUNET_free (file_path);
-    GNUNET_free (topic);
-  }
-  closedir (dir);
-}
-
 
 /**
  * Process statistics requests.
@@ -1884,7 +2021,7 @@ run (void *cls, struct GNUNET_SERVER_Handle *server,
   GNUNET_SCHEDULER_add_delayed (GNUNET_TIME_UNIT_FOREVER_REL,
 	                              &shutdown_task,
                                 NULL);
-  look_for_old_messages ();
+	//look_for_old_messages();
 }
 
 

@@ -42,7 +42,7 @@ gnunet_service_mqtt_SOURCES = \
   gnunet-service-mqtt.c
 gnunet_service_mqtt_LDADD = \
   -lgnunetutil -lgnunetcore -lgnunetdht -lgnunetregex -lgnunethello \
-  -lgnunetmesh \
+  -lgnunetmesh -lgnunetmulticast \
   $(INTLLIBS)
 # $(top_builddir)/src/mqtt/libregexutils.la 
 gnunet_service_mqtt_LDFLAGS = \
