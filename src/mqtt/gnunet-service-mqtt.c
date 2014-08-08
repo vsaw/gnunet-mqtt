@@ -80,7 +80,7 @@ struct RegexSearchContext
 	/**
 	 * Channel that serves the topic we are searching subscribers for
 	 */
-	struct MulticastChannel *channel;
+	struct PublisherChannel *channel;
 
   /**
    * Pointer to the filepath where the topic and the content of the
@@ -291,13 +291,52 @@ struct Subscription
    * Last item in the list of running DHT Monitor operations
    */
   struct DhtMonitorList *dht_monitor_list_tail;
+	/**
+	 * DLL head of accept states for this subscription
+	 */
+	struct AcceptState *as_head;
+	/**
+	 * DLL tail of accept states for this subscription
+	 */
+	struct AcceptState *as_tail;
+	/**
+	 * DLL head of channels for this subscription
+	 */
+	struct SubscriberChannel *channel_head;
+	/**
+	 * DLL head of channels for this subscription
+	 */
+	struct SubscriberChannel *channel_tail;
+};
+
+struct SubscriberChannel {
+	/**
+	 * Element in a DLL.
+	 */
+	struct SubscriberChannel *prev;
+	/**
+	 * Element in a DLL.
+	 */
+	struct SubscriberChannel *next;
+	/**
+	 * key of the channel used to join
+	 */
+	struct GNUNET_CRYPTO_EddsaPublicKey channel_public_key;
+	/**
+	 * multicast member handle
+	 */
+	struct GNUNET_MULTICAST_Member *member;
+	/**
+	 * GNUNET_YES or GNUNET_NO
+	 */
+	int joined;
 };
 
 /**
  * Struct describing a multicast channel, it's matching topic subscription
  * accept states keys, which are covered so far.
  */
-struct MulticastChannel {
+struct PublisherChannel {
 	/**
 	 * Expiration of the dht channel announcement
 	 */
@@ -309,11 +348,11 @@ struct MulticastChannel {
 	/**
 	 * Element in a DLL.
 	 */
-	struct MulticastChannel *prev;
+	struct PublisherChannel *prev;
 	/**
 	 * Element in a DLL.
 	 */
-	struct MulticastChannel *next;
+	struct PublisherChannel *next;
 	/**
 	 * Multicast Channel handle
 	 */
@@ -473,12 +512,12 @@ static const char *hash_regex = "(/(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|
 /**
  * Head of DLL of all multicast channels maintained by this service (publisher)
  */
-static struct MulticastChannel* multicast_channels_head;
+static struct PublisherChannel* multicast_channels_head;
 
 /**
  * Tail of DLL of all multicast channels maintained by this service (publisher)
  */
-static struct MulticastChannel* multicast_channels_tail;
+static struct PublisherChannel* multicast_channels_tail;
 
 /**
  * Returns a string containing the hexadecimal representation of mem
@@ -917,7 +956,7 @@ static void subscribed_peer_found (void *cls,
 
 	/** multicast stuff **/
 	struct RegexSearchContext *context = cls;
-	struct MulticastChannel* channel = context->channel;
+	struct PublisherChannel* channel = context->channel;
 
 	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
 	struct GNUNET_CRYPTO_EddsaPublicKey public_channel_key;
@@ -1067,7 +1106,7 @@ static void subscribed_peer_found (void *cls,
  */
 static void search_for_subscribers (const char *topic,
 		struct GNUNET_MQTT_ClientPublishMessage *publish_msg,
-		struct MulticastChannel *channel)
+		struct PublisherChannel *channel)
 {
 	struct RegexSearchContext *context;
 	LOG_DEBUG("Searching for subscribers on topic %s\n", topic);
@@ -1113,7 +1152,7 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 
 
 	struct GNUNET_CRYPTO_EddsaPrivateKey *private_channel_key;
-	struct MulticastChannel *channel;
+	struct PublisherChannel *channel;
 
 	for (channel = multicast_channels_head; NULL != channel;
 			channel = channel->next) {
@@ -1131,7 +1170,7 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 		}
 
 		// create the channel
-		channel = GNUNET_new(struct MulticastChannel);
+		channel = GNUNET_new(struct PublisherChannel);
 		channel->channel_private_key = (*private_channel_key);
 		GNUNET_free(private_channel_key);
 		channel->channel_topic = GNUNET_malloc(strlen(topic));
@@ -1446,6 +1485,90 @@ monitor_accepting_states_for_subscription_cb (void *cls,
   GNUNET_CONTAINER_multihashmap_destroy (accepting_states);
 }
 
+static int
+collect_accept_states(void *cls, const struct GNUNET_HashCode *key, void *value) {
+	struct Subscription *subscription = cls;
+
+	struct AcceptState *iter_as;
+	for(iter_as = subscription->as_head; iter_as != NULL; iter_as = iter_as->next) {
+		if(iter_as->hash.bits == key->bits)
+			return GNUNET_YES; // already know this accept state
+	}
+
+	LOG_DEBUG("Adding new accept state key %#x for subscription\n", key->bits);
+	// new accept state, store it
+	struct AcceptState *new_as = GNUNET_new(struct AcceptState);
+	new_as->hash = *key;
+	GNUNET_CONTAINER_DLL_insert(subscription->as_head,
+															subscription->as_tail,
+															new_as);
+
+	return GNUNET_YES;
+}
+
+static void
+receive_multicast_message (void *cls, const struct GNUNET_MULTICAST_MessageHeader *msg) {
+	LOG_DEBUG("received message from multicast channel =D\n");
+
+}
+
+static void
+join_channels(struct Subscription *subscription) {
+	LOG_DEBUG("Joining all new channels\n");
+	struct SubscriberChannel *iter_chan;
+	for (iter_chan = subscription->channel_head; iter_chan != NULL; iter_chan =
+			iter_chan->next) {
+		if (iter_chan->joined == GNUNET_NO) {
+			struct GNUNET_MULTICAST_Member *member = GNUNET_new(struct GNUNET_MULTICAST_Member);
+			member = GNUNET_MULTICAST_member_join(	cfg,
+																				&iter_chan->channel_public_key,
+																				GNUNET_CRYPTO_ecdsa_key_get_anonymous(), // join annonymounsly
+																				NULL,
+																				0,
+																				NULL,
+																				NULL,
+																				NULL,
+																				NULL,
+																				NULL,
+																				NULL,
+																				NULL,
+																				receive_multicast_message,
+																				iter_chan);
+			if(member != NULL) {
+				iter_chan->joined = GNUNET_YES;
+				iter_chan->member = member;
+				LOG_DEBUG("Joining a new channel with pub key %#x\n", &iter_chan->channel_public_key);
+			} else {
+				LOG_WARNING("Error joining channel, will retry later\n");
+			}
+		}
+	}
+
+}
+
+static void
+found_channel_public_key(void *cls, struct GNUNET_TIME_Absolute exp, const struct GNUNET_HashCode *key, const struct GNUNET_PeerIdentity *get_path, unsigned int get_path_length, const struct GNUNET_PeerIdentity *put_path, unsigned int put_path_length, enum GNUNET_BLOCK_Type type, size_t size, const void *data) {
+	struct Subscription *subscription = cls;
+	struct GNUNET_CRYPTO_EddsaPublicKey *channel_pub_key = GNUNET_malloc(sizeof(struct GNUNET_CRYPTO_EddsaPublicKey));
+	memcpy(channel_pub_key,data,size);
+
+	struct SubscriberChannel *iter_chan;
+	for(iter_chan = subscription->channel_head; iter_chan != NULL; iter_chan = iter_chan->next) {
+		if(iter_chan->channel_public_key->q_y == channel_pub_key->q_y)
+			return; // we already know this channel
+	}
+
+	LOG_DEBUG("Adding new SubscriberChannel to subscription\n");
+
+	struct SubscriberChannel *new_channel = GNUNET_new(struct SubscriberChannel);
+
+	new_channel->channel_public_key = *channel_pub_key;
+	new_channel->joined = GNUNET_NO;
+
+	GNUNET_CONTAINER_DLL_insert(subscription->channel_head,subscription->channel_tail,new_channel);
+
+	join_channels(subscription);
+}
 
 /**
  * Issue a DHT monitor operation on the accepting states of the given DHT
@@ -1464,7 +1587,27 @@ find_channel_information_for_accepting_states (void *cls,
     struct GNUNET_REGEX_Announcement *a,
     struct GNUNET_CONTAINER_MultiHashMap *accepting_states)
 {
-  // todo look up if you can find it somewhere somehow
+	struct Subscription *subscription = cls;
+	// todo look up if you can find it somewhere somehow
+	GNUNET_CONTAINER_multihashmap_iterate(accepting_states,
+																				collect_accept_states,
+																				subscription);
+	struct AcceptState *iter_as;
+	for(iter_as = subscription->as_head; iter_as != NULL; iter_as = iter_as->next) {
+		// derive channel dht key
+		struct GNUNET_HashCode channel_dht_key;
+		GNUNET_CRYPTO_hash(&iter_as->hash, sizeof(struct GNUNET_HashCode), &channel_dht_key);
+		// look up channel public key in dht
+		GNUNET_DHT_get_start(	dht_handle,
+													GNUNET_BLOCK_TYPE_ANY,
+													&channel_dht_key,
+													5,
+													GNUNET_DHT_RO_NONE,
+													NULL,
+													0,
+													found_channel_public_key,
+													subscription);
+	}
 
   // HACKY HACK: by default we just assume there is no channel information in
   // the DHT and do a monitor for puts
