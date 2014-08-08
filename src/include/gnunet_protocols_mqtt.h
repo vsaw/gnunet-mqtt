@@ -57,6 +57,8 @@ extern "C"
  */
 #define GNUNET_MESSAGE_TYPE_MQTT_CLIENT_UNSUBSCRIBE_ACK 49383
 
+#define GNUNET_MESSAGE_TYPE_MQTT_CLIENT_JOIN 49384
+#define GNUNET_MESSAGE_TYPE_MQTT_CLIENT_JOIN_ACK 49385
 
 
 #if 0                           /* keep Emacsens' auto-indent happy */

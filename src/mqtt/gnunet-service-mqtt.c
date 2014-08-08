@@ -969,7 +969,7 @@ static void subscribed_peer_found (void *cls,
 	struct GNUNET_TIME_Relative remaing_announce_time =
 			GNUNET_TIME_absolute_get_remaining(channel->expiration);
 
-	LOG_DEBUG("--------> Found an active subscription for topic %s with accept state key %#x\n",
+	LOG_DEBUG("Found an active subscription for topic %s with accept state key %#x\n",
 			channel->channel_topic, key->bits);
 
 	// check if this channel serves the found accept state
@@ -1017,7 +1017,7 @@ static void subscribed_peer_found (void *cls,
 
 			GNUNET_DHT_put(dht_handle, &announce_key, 3, // replication
 											GNUNET_DHT_RO_NONE,
-											GNUNET_BLOCK_TYPE_ANY, // TODO add mqtt channel blocktype to DHT
+											GNUNET_BLOCK_TYPE_TEST , // TODO add mqtt channel blocktype to DHT
 											sizeof(struct GNUNET_HashCode),
 											&public_channel_key,
 											channel->expiration,
@@ -1025,9 +1025,13 @@ static void subscribed_peer_found (void *cls,
 											NULL,
 											NULL);
 			as_iter->announced = GNUNET_YES;
-			LOG_DEBUG("Announcing Channel for topic %s under dht key %#x\n",
+
+			//GNUNET_CRYPTO_EddsaPublicKey
+			char * debug = memdump (&public_channel_key, sizeof(struct GNUNET_CRYPTO_EddsaPublicKey));
+			LOG_DEBUG("Announcing Channel for topic %s under with public key %s\n",
 								channel->channel_topic,
-								announce_key.bits);
+								debug);
+			GNUNET_free(debug);
 		}
 	}
 
@@ -1127,6 +1131,19 @@ static void search_for_subscribers (const char *topic,
 
 static int send_multicast_message (void *cls, size_t *data_size, void *data);
 
+static void
+accept_all_join_requests (void *cls,
+		const struct GNUNET_CRYPTO_EcdsaPublicKey *member_key,
+		const struct GNUNET_MessageHeader *join_msg,
+		struct GNUNET_MULTICAST_JoinHandle *jh)
+{
+	// accept everybody
+	struct GNUNET_MessageHeader join_resp;
+	join_resp.type = GNUNET_MESSAGE_TYPE_MQTT_CLIENT_JOIN_ACK;
+	join_resp.size = sizeof(struct GNUNET_MessageHeader);
+	GNUNET_MULTICAST_join_decision(jh, GNUNET_YES, 0, NULL, &join_resp);
+}
+
 /**
  * Handle MQTT-PUBLISH-message.
  *
@@ -1137,7 +1154,6 @@ static int send_multicast_message (void *cls, size_t *data_size, void *data);
 static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 		const struct GNUNET_MessageHeader *msg)
 {
-	LOG_DEBUG("enter handle_publish\n");
 	char *topic, *message, *prefixed_topic;
 	size_t message_len;
 	size_t msg_len = ntohs(msg->size);
@@ -1183,17 +1199,22 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 				GNUNET_MULTICAST_origin_start(cfg, /** config handle **/
 																			&channel->channel_private_key, /** private key **/
 																			1, /** max_fragment_id **/
-																			NULL, /** join_req_cb **/
+																			&accept_all_join_requests, /** join_req_cb **/
 																			NULL, /** member_test_cb **/
 																			NULL, /** replay_fragment_cb **/
 																			NULL, /** replay_msg_cb **/
 																			NULL, /** req_cb **/
 																			NULL, /** msg_cb **/
 																			NULL);/** cls **/
+		if(channel->channel == NULL) {
+			LOG_ERROR("Could not create multicast channel for topic %s\n", channel->channel_topic);
+			return;
+		}
+
 		GNUNET_CONTAINER_DLL_insert(multicast_channels_head,
 																multicast_channels_tail,
 																channel);
-		LOG_DEBUG("Created Channel with key %#x\n", private_channel_key->d);
+		LOG_DEBUG("Created Channel\n");
 	}
 
 	struct PendingMulticastMessage *pub_msg =
@@ -1211,7 +1232,6 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 //  strncpy(message, ((char *) (publish_msg + 1)) + publish_msg->topic_len,
 //          message_len);
 //  message[message_len - 1] = '\0';
-//  add_prefix (topic, &prefixed_topic);
 
 	struct PendingMulticastMessage *pending_msg_iter;
 
@@ -1226,7 +1246,8 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
 																		pending_msg_iter);
 	}
 
-	search_for_subscribers(topic, publish_msg, channel);
+  add_prefix (topic, &prefixed_topic);
+	search_for_subscribers(prefixed_topic, publish_msg, channel);
 
 	LOG_DEBUG("outgoing PUBLISH message received: %s [%d bytes] (%d overall)\n",
 						topic,
@@ -1245,8 +1266,6 @@ static void handle_mqtt_publish (void *cls, struct GNUNET_SERVER_Client *client,
  */
 static int send_multicast_message (void *cls, size_t *data_size, void *data)
 {
-	LOG_DEBUG("enter send_munticast_message\n");
-
 	struct PendingMulticastMessage *pub_msg = cls;
 	size_t msg_size = pub_msg->msg.header.size;
 	if (*data_size < msg_size) {
@@ -1392,9 +1411,12 @@ monitor_accepting_state_iterator (void *cls,
     const struct GNUNET_HashCode *key,
     void *value)
 {
-  char *state_string = memdump (key, sizeof (struct GNUNET_HashCode) / 2);
+	struct GNUNET_HashCode channel_dht_key;
+	GNUNET_CRYPTO_hash(key, sizeof(struct GNUNET_HashCode), &channel_dht_key);
+
+	char *state_string = memdump (&channel_dht_key, sizeof (struct GNUNET_HashCode) / 2);
   LOG (GNUNET_ERROR_TYPE_DEBUG,
-       "Subscriber monitoring state %s 0x%s\n",
+       "Subscriber monitoring state %s --> 0x%s\n",
        value,
        state_string);
   GNUNET_free (state_string);
@@ -1411,9 +1433,9 @@ monitor_accepting_state_iterator (void *cls,
   struct DhtMonitorList *monitor_item = GNUNET_new (struct DhtMonitorList);
   monitor_item->monitor_handle = GNUNET_DHT_monitor_start (dht_handle,
                             GNUNET_BLOCK_TYPE_ANY, // todo tweak to get better results
-                            key,
-                            &subscriber_monitor_get_cb,
-                            &subscriber_monitor_get_response_cb,
+                            &channel_dht_key,
+                            NULL, //&subscriber_monitor_get_cb,
+                            NULL, //&subscriber_monitor_get_response_cb,
                             &subscriber_monitor_put_cb,
                             subscription);
   GNUNET_CONTAINER_DLL_insert (subscription->dht_monitor_list_head,
@@ -1485,6 +1507,9 @@ monitor_accepting_states_for_subscription_cb (void *cls,
   GNUNET_CONTAINER_multihashmap_destroy (accepting_states);
 }
 
+/**
+ * hashmap iterator that adds all accept states to a subscription
+ */
 static int
 collect_accept_states(void *cls, const struct GNUNET_HashCode *key, void *value) {
 	struct Subscription *subscription = cls;
@@ -1506,12 +1531,18 @@ collect_accept_states(void *cls, const struct GNUNET_HashCode *key, void *value)
 	return GNUNET_YES;
 }
 
+/**
+ * Multicast channel message callback
+ */
 static void
 receive_multicast_message (void *cls, const struct GNUNET_MULTICAST_MessageHeader *msg) {
 	LOG_DEBUG("received message from multicast channel =D\n");
 
 }
 
+/**
+ * joins all channel for a given subscription that are flagged as not joined (i.e. joined == GNUNET_NO)
+ */
 static void
 join_channels(struct Subscription *subscription) {
 	LOG_DEBUG("Joining all new channels\n");
@@ -1519,21 +1550,31 @@ join_channels(struct Subscription *subscription) {
 	for (iter_chan = subscription->channel_head; iter_chan != NULL; iter_chan =
 			iter_chan->next) {
 		if (iter_chan->joined == GNUNET_NO) {
-			struct GNUNET_MULTICAST_Member *member = GNUNET_new(struct GNUNET_MULTICAST_Member);
-			member = GNUNET_MULTICAST_member_join(	cfg,
+
+			struct GNUNET_MessageHeader join_request;
+			join_request.type = GNUNET_MESSAGE_TYPE_MQTT_CLIENT_JOIN;
+			join_request.size = sizeof(struct GNUNET_MessageHeader);
+
+			char * debug = memdump (&iter_chan->channel_public_key, sizeof(struct GNUNET_CRYPTO_EddsaPrivateKey));
+			LOG_DEBUG("========= ATTEMPT JOIN %s\n", debug);
+			GNUNET_free(debug);
+
+			struct GNUNET_MULTICAST_Member *member =
+					GNUNET_MULTICAST_member_join(	cfg,
 																				&iter_chan->channel_public_key,
 																				GNUNET_CRYPTO_ecdsa_key_get_anonymous(), // join annonymounsly
-																				NULL,
-																				0,
-																				NULL,
-																				NULL,
-																				NULL,
-																				NULL,
-																				NULL,
-																				NULL,
-																				NULL,
-																				receive_multicast_message,
-																				iter_chan);
+																				NULL, /*origin*/
+																				0, /* relay count*/
+																				NULL, /* relays */
+																				&join_request, /* join request*/
+																				NULL, /* join request cb */
+																				NULL, /* join decision cb */
+																				NULL, /* membership test cb */
+																				NULL, /* replay fragment cb */
+																				NULL, /* replay message cb */
+																				receive_multicast_message, /* message cb*/
+																				iter_chan); /* clousure */
+			LOG_DEBUG("========= ATTEMPT JOIN REQ SENT\n");
 			if(member != NULL) {
 				iter_chan->joined = GNUNET_YES;
 				iter_chan->member = member;
@@ -1546,19 +1587,30 @@ join_channels(struct Subscription *subscription) {
 
 }
 
+/**
+ * DHT GET callback for announced channel public keys
+ */
 static void
-found_channel_public_key(void *cls, struct GNUNET_TIME_Absolute exp, const struct GNUNET_HashCode *key, const struct GNUNET_PeerIdentity *get_path, unsigned int get_path_length, const struct GNUNET_PeerIdentity *put_path, unsigned int put_path_length, enum GNUNET_BLOCK_Type type, size_t size, const void *data) {
+found_channel_public_key (void *cls,
+		struct GNUNET_TIME_Absolute exp, const struct GNUNET_HashCode *key,
+		const struct GNUNET_PeerIdentity *get_path, unsigned int get_path_length,
+		const struct GNUNET_PeerIdentity *put_path, unsigned int put_path_length,
+		enum GNUNET_BLOCK_Type type, size_t size, const void *data)
+{
 	struct Subscription *subscription = cls;
 	struct GNUNET_CRYPTO_EddsaPublicKey *channel_pub_key = GNUNET_malloc(sizeof(struct GNUNET_CRYPTO_EddsaPublicKey));
 	memcpy(channel_pub_key,data,size);
 
 	struct SubscriberChannel *iter_chan;
 	for(iter_chan = subscription->channel_head; iter_chan != NULL; iter_chan = iter_chan->next) {
-		if(iter_chan->channel_public_key->q_y == channel_pub_key->q_y)
+		if(iter_chan->channel_public_key.q_y == channel_pub_key->q_y)
 			return; // we already know this channel
 	}
 
-	LOG_DEBUG("Adding new SubscriberChannel to subscription\n");
+
+	char * debug = memdump (channel_pub_key, sizeof(struct GNUNET_CRYPTO_EddsaPublicKey));
+	LOG_DEBUG("Adding new SubscriberChannel to subscription with pub key %s\n", debug);
+	GNUNET_free(debug);
 
 	struct SubscriberChannel *new_channel = GNUNET_new(struct SubscriberChannel);
 
@@ -1588,7 +1640,6 @@ find_channel_information_for_accepting_states (void *cls,
     struct GNUNET_CONTAINER_MultiHashMap *accepting_states)
 {
 	struct Subscription *subscription = cls;
-	// todo look up if you can find it somewhere somehow
 	GNUNET_CONTAINER_multihashmap_iterate(accepting_states,
 																				collect_accept_states,
 																				subscription);
@@ -1599,7 +1650,7 @@ find_channel_information_for_accepting_states (void *cls,
 		GNUNET_CRYPTO_hash(&iter_as->hash, sizeof(struct GNUNET_HashCode), &channel_dht_key);
 		// look up channel public key in dht
 		GNUNET_DHT_get_start(	dht_handle,
-													GNUNET_BLOCK_TYPE_ANY,
+													GNUNET_BLOCK_TYPE_TEST ,
 													&channel_dht_key,
 													5,
 													GNUNET_DHT_RO_NONE,
@@ -1626,7 +1677,6 @@ static void
 handle_mqtt_subscribe (void *cls, struct GNUNET_SERVER_Client *client,
                        const struct GNUNET_MessageHeader *msg)
 {
-  LOG_DEBUG("enter handle_subscribe\n");
 	struct Subscription *subscription;
   char *topic, *regex_topic;
   struct GNUNET_TIME_Relative refresh_interval;
